@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bachat Admin — Control Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="hidden">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg viewBox="0 0 48 48" width="46" height="46"><rect width="48" height="48" rx="12" fill="#5B2DE0"/><path d="M24 12c-5 0-9 3.4-9 8 0 3 1.8 5.3 4.5 6.6L18 36l6-3 6 3-1.5-9.4C31.2 25.3 33 23 33 20c0-4.6-4-8-9-8z" fill="#fff"/><circle cx="24" cy="20" r="3.4" fill="#5B2DE0"/></svg>
+    </div>
+    <h1>Bachat Admin</h1>
+    <p class="muted">Sign in with an admin account</p>
+    <form id="admin-login">
+      <label>Email<input type="email" id="ad-email" required placeholder="admin@bachat.app"></label>
+      <label>Password<input type="password" id="ad-pass" required placeholder="••••••••"></label>
+      <button class="btn btn-primary btn-block" type="submit">Sign In</button>
+    </form>
+  </div>
+</div>
+
+<!-- PANEL -->
+<div id="panel" class="hidden">
+  <aside id="sidebar">
+    <div class="sb-brand">
+      <svg viewBox="0 0 48 48" width="34" height="34"><rect width="48" height="48" rx="10" fill="#5B2DE0"/><path d="M24 12c-5 0-9 3.4-9 8 0 3 1.8 5.3 4.5 6.6L18 36l6-3 6 3-1.5-9.4C31.2 25.3 33 23 33 20c0-4.6-4-8-9-8z" fill="#fff"/></svg>
+      <span>Bachat Admin</span>
+    </div>
+    <nav id="sb-nav">
+      <button class="sb-item active" data-p="dashboard"><span class="sb-ic">▦</span><span>Dashboard</span></button>
+      <button class="sb-item" data-p="requests"><span class="sb-ic">⇅</span><span>Requests</span><span class="sb-badge" id="badge-req"></span></button>
+      <button class="sb-item" data-p="payments"><span class="sb-ic">💳</span><span>Payment Methods</span></button>
+      <button class="sb-item" data-p="users"><span class="sb-ic">👥</span><span>Users</span></button>
+      <button class="sb-item" data-p="plans"><span class="sb-ic">◈</span><span>Plans</span></button>
+      <button class="sb-item" data-p="announce"><span class="sb-ic">📣</span><span>Announcements</span></button>
+      <button class="sb-item" data-p="content"><span class="sb-ic">✎</span><span>App Content</span></button>
+    </nav>
+    <button class="sb-item sb-logout" id="ad-logout">⏻ <span>Logout</span></button>
+  </aside>
+
+  <main id="panel-main">
+    <header id="panel-top">
+      <h2 id="page-title">Dashboard</h2>
+      <div class="pt-right"><span class="chip chip-green" id="admin-chip">Admin</span></div>
+    </header>
+
+    <section id="page-dashboard" class="page"></section>
+    <section id="page-requests" class="page hidden"></section>
+    <section id="page-payments" class="page hidden"></section>
+    <section id="page-users" class="page hidden"></section>
+    <section id="page-plans" class="page hidden"></section>
+    <section id="page-announce" class="page hidden"></section>
+    <section id="page-content" class="page hidden"></section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="js/config.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>
