@@ -1,18 +1,51 @@
 /* ═══════════════════════════════════════════════════════════
-   GODX — user app logic 4.0 (premium edition)
+   GODX — user app logic 7.0 (daily-interest edition)
    Collections: users, plans, investments, transactions,
-                announcements, appContent, paymentMethods
-   New: premium stroke icon system, Sora display font,
-        REAL-TIME sync — admin edits to plans, payment methods,
-        announcements & app content update the app instantly
-        (onSnapshot; no composite indexes required)
+                announcements, appContent, paymentMethods,
+                supportChats(→messages)
+
+   v7.0 highlights
+   ───────────────
+   ① DAILY INTEREST ENGINE — every active investment accrues a
+     per-day slice (cashbackAmount / durationDays), anchored to the
+     EXACT activation timestamp (createdAt). Interest for period N
+     becomes due at activation + N×24h — never "at midnight".
+     · Firestore serverTimestamp anchors every financial write;
+       device-clock skew is corrected against server time and the
+       remaining drift is absorbed by the rules' 5-minute slack.
+     · Reconciliation runs inside a Firestore transaction guarded
+       by a per-investment lock doc — refreshes, double-clicks and
+       multiple open tabs can never double-credit.
+     · Missed periods are paid as one catch-up credit (rule-
+       validated against server time); accrual stops at maturity.
+   ② LIVE COUNTDOWN — a premium "Next Interest: 23h 41m 18s" chip
+     on every active plan, computed from timestamps each tick
+     (never a naive decrement). On zero it reconciles the plan.
+   ③ SAFE MONEY — joinPlan / openWithdraw now run as atomic
+     Firestore transactions that re-read the balance inside the
+     transaction: negative balances & stale-cache races are
+     structurally impossible.
+   ④ LISTENER LEAKS FIXED — per-view unsubscribes (chat list, chat
+     rooms) are torn down when views change; previously every visit
+     stacked another permanent onSnapshot.
+   ⑤ SUPPORT CHAT — premium redesigned room (ApexVault-style):
+     controlled logo size, Inter/Manrope-grade typography, distinct
+     user/support bubbles with badge + timestamps, smooth entrance
+     animations, loading / error / retry states, dedupe-safe send,
+     unread sync, mobile-first layout.
    ═══════════════════════════════════════════════════════════ */
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const inr = n => '₹' + Number(n || 0).toLocaleString('en-IN');
+const inr2 = n => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fdate = ts => ts && ts.toDate ? ts.toDate().toLocaleDateString('en-IN', {day:'numeric',month:'short',year:'numeric'}) : '';
+const ftime = ts => ts && ts.toDate ? ts.toDate().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '';
+const fdt = ts => ts && ts.toDate ? ts.toDate().toLocaleString('en-IN', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* paise-exact money helper — converts to integer paise to avoid float drift */
+const paise = n => Math.round(Number(n || 0) * 100);
+const fromPaise = p => p / 100;
 const store = { // safe localStorage (private-mode proof)
   get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : v; } catch(e){ return d; } },
   set(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
@@ -35,6 +68,11 @@ const IC = {
   users: ic('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
   user: ic('<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
   chat: ic('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>'),
+  headset: ic('<path d="M3 14v-3a9 9 0 0 1 18 0v3"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>'),
+  send: ic('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>'),
+  paperclip: ic('<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>'),
+  file: ic('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
+  chevL: ic('<path d="m15 18-6-6 6-6"/>'),
   check: ic('<path d="M20 6 9 17l-5-5"/>'),
   checkCircle: ic('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
   spark: ic('<path d="M9.94 15.5a2 2 0 0 0-1.44-1.44L2.37 12.5a.5.5 0 0 1 0-.98l6.13-1.56A2 2 0 0 0 9.94 8.5l1.56-6.13a.5.5 0 0 1 .98 0l1.56 6.13a2 2 0 0 0 1.44 1.44l6.13 1.56a.5.5 0 0 1 0 .98l-6.13 1.56a2 2 0 0 0-1.44 1.44l-1.56 6.13a.5.5 0 0 1-.98 0z"/>'),
@@ -58,15 +96,46 @@ const IC = {
   card: ic('<rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>'),
   home: ic('<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>'),
   box: ic('<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>'),
-  gear: ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
-  party: ic('<path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12v0c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10"/><path d="m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11v0c-.11.7-.72 1.22-1.43 1.22H17"/><path d="m11 2 .33.82c.34.86-.2 1.82-1.11 1.98v0C9.52 4.9 9 5.52 9 6.23V7"/><path d="M11 13c1.93 1.93 2.83 4.17 2 5-.83.83-3.07-.07-5-2-1.93-1.93-2.83-4.17-2-5 .83-.83 3.07.07 5 2Z"/>')
+  gear: ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06-.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+  party: ic('<path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12v0c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10"/><path d="m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11v0c-.11.7-.72 1.22-1.43 1.22H17"/><path d="m11 2 .33.82c.34.86-.2 1.82-1.11 1.98v0C9.52 4.9 9 5.52 9 6.23V7"/><path d="M11 13c1.93 1.93 2.83 4.17 2 5-.83.83-3.07-.07-5-2-1.93-1.93-2.83-4.17-2-5 .83-.83 3.07.07 5 2Z"/>'),
+  timer: ic('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/><path d="M6.38 18.7 4 21"/><path d="M17.64 18.67 20 21"/>'),
+  badge: ic('<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>'),
+  refresh: ic('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+  alert: ic('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>')
 };
 
 /* ── Global state ── */
-let currentUser = null, userDoc = null, plansCache = [];
-let unsub = [];
+let currentUser = null, userDoc = null;
+let unsub = [];               // session-scoped listeners (cleared on logout)
+let viewUnsub = [];           // per-view listeners — torn down on every view switch
 let balanceVisible = store.get('bgBal', 'on') !== 'off', currentView = 'home';
-let lastBalance = null; // for count-up animation
+let lastBalance = null;       // for count-up animation
+
+/* ══════════ SERVER-TIME SYNC ══════════
+   Financial timestamps must not depend on the device clock. We estimate the
+   offset between Firestore server time and Date.now() by writing a throwaway
+   serverTimestamp to the user's own doc (lastSeenAt — whitelisted in rules)
+   and reading it back. nowMs() then returns corrected time everywhere.
+   The rules also add a 5-minute slack window, so even a failed sync is safe. */
+let serverOffsetMs = 0;
+let serverSyncedAt = 0;
+function nowMs() { return Date.now() + serverOffsetMs; }
+async function syncServerTime(force) {
+  if (!currentUser) return;
+  if (!force && nowMs() - serverSyncedAt < 10 * 60 * 1000) return; // re-sync every 10 min
+  try {
+    const ref = db.collection('users').doc(currentUser.uid);
+    const t0 = Date.now();
+    await ref.set({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    const snap = await ref.get({ source: 'server' });
+    const sv = snap.data().lastSeenAt;
+    if (sv && sv.toMillis) {
+      const rtt = (Date.now() - t0) / 2;
+      serverOffsetMs = sv.toMillis() - (t0 + rtt);
+      serverSyncedAt = Date.now();
+    }
+  } catch (e) { /* rules not yet published / offline — 5-min rule slack covers us */ }
+}
 
 /* ══════════ FULLSCREEN LOADER ══════════ */
 function showLoader(txt = 'Working…') {
@@ -79,14 +148,14 @@ function hideLoader() { const el = $('#loader-overlay'); if (el) el.classList.re
 function toast(msg, type = '') {
   const t = document.createElement('div');
   t.className = 'toast ' + type;
-  t.innerHTML = (type === 'ok' ? IC.checkCircle : IC.info) + '<span>' + esc(msg) + '</span>';
+  t.innerHTML = (type === 'ok' ? IC.checkCircle : type === 'err' ? IC.alert : IC.info) + '<span>' + esc(msg) + '</span>';
   $('#toast-root').appendChild(t);
   setTimeout(() => { t.classList.add('bye'); setTimeout(() => t.remove(), 320); }, 2800);
 }
 
 /* ══════════ CONFETTI celebration ══════════ */
 function confetti(n = 26) {
-  const colors = ['#7C4DFF', '#F5B93F', '#0BA968', '#2563EB', '#E5484D', '#C084FC'];
+  const colors = ['#6366F1', '#F2D06B', '#0E9F6E', '#2F6BEF', '#E5484D', '#D4AF37'];
   for (let i = 0; i < n; i++) {
     const p = document.createElement('div');
     p.className = 'confetti-piece';
@@ -231,7 +300,9 @@ function authMsg(err) {
 
 /* ══════════ AUTH STATE ══════════ */
 auth.onAuthStateChanged(async user => {
-  unsub.forEach(u => u()); unsub = [];
+  unsub.forEach(u => { try { u(); } catch (e) {} }); unsub = [];
+  teardownViewListeners();
+  interestEngineStop();
   if (!user) {
     currentUser = null; userDoc = null; lastBalance = null;
     $('#app').classList.add('hidden');
@@ -246,6 +317,7 @@ auth.onAuthStateChanged(async user => {
     $('#app').classList.remove('hidden');
     bindUserListener();
     bindContentListeners(); // 🔴 real-time admin → user sync
+    syncServerTime(true).then(() => interestEngineStart()); // daily interest, server-anchored
     renderHeader();
     switchView('home');
   } catch (e) {
@@ -260,12 +332,13 @@ auth.onAuthStateChanged(async user => {
 
 function bindUserListener() {
   unsub.push(db.collection('users').doc(currentUser.uid).onSnapshot(s => {
+    if (!s.exists) return;
     userDoc = s;
     if (currentView === 'home') renderHome();
     if (currentView === 'wallet') renderWallet();
     if (currentView === 'settings') renderSettings();
     renderHeader();
-  }));
+  }, () => {}));
 }
 
 /* ══════════ REAL-TIME CONTENT SYNC ══════════
@@ -308,7 +381,8 @@ function renderHeader() {
   if (!userDoc) return;
   const u = userDoc.data();
   const titles = { home: ['Welcome back 👋', u.name || 'Saver'], plans: ['Grow your money', 'Savings Plans'],
-                   wallet: ['Your money, always yours', 'My Wallet'], settings: ['Manage everything', 'Settings'] };
+                   wallet: ['Your money, always yours', 'My Wallet'], support: ['We are here to help', 'Support & Help'],
+                   settings: ['Manage everything', 'Settings'] };
   const [sub, title] = titles[currentView];
   $('#app-header').innerHTML = `
     <div class="hd-left">
@@ -323,12 +397,26 @@ function renderHeader() {
 
 /* ══════════ NAV ══════════ */
 $$('.nav-btn').forEach(b => b.onclick = () => switchView(b.dataset.view));
+
+/* tear down everything a view opened (chat listeners, timers) before switching */
+function teardownViewListeners() {
+  viewUnsub.forEach(u => { try { u(); } catch (e) {} });
+  viewUnsub = [];
+  CountdownRegistry.clear();
+}
+
 function switchView(v) {
+  if (v === currentView && $('#view-' + v).innerHTML) {
+    // re-tap on same tab just scrolls up
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+  teardownViewListeners();
   currentView = v;
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-  ['home','plans','wallet','settings'].forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
+  ['home','plans','wallet','support','settings'].forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
   renderHeader();
-  ({ home: renderHome, plans: renderPlans, wallet: renderWallet, settings: renderSettings })[v]();
+  ({ home: renderHome, plans: renderPlans, wallet: renderWallet, support: renderSupport, settings: renderSettings })[v]();
   window.scrollTo({ top: 0 });
 }
 
@@ -434,16 +522,228 @@ function drawAnnouncements(sel) {
   el.innerHTML = h + '</div>';
 }
 
+/* ══════════════════════════════════════════════════════════
+   DAILY INTEREST ENGINE
+   ──────────────────────────────────────────────────────────
+   Model (all anchored to the investment's createdAt server timestamp):
+     dailyAmount (paise) = floor(amountPaise × cashbackPct / 100 / durationDays)
+     with the rounding remainder folded into the FINAL day so the total
+     always equals exactly cashbackAmount.
+     Period N becomes due at createdAt + N×86400s — the exact activation
+     time, every day. Never midnight.
+   Payout is a single Firestore transaction per investment:
+     · guarded by a lock doc  locks/<invId>  (multi-tab / refresh safe)
+     · reads the investment fresh inside the transaction → idempotent
+     · catch-up: pays ALL elapsed unpaid periods in one credit
+     · writes ONE interest transaction (per-day breakdown in `days`)
+     · stops automatically when interestPaid reaches durationDays
+     · principal release stays with admin Plan Payouts
+   ══════════════════════════════════════════════════════════ */
+
+const DAY_MS = 86400000;
+
+function invStartMs(i) {
+  return i.createdAt && i.createdAt.toMillis ? i.createdAt.toMillis()
+       : i.createdAt && i.createdAt.seconds ? i.createdAt.seconds * 1000
+       : nowMs();
+}
+/* per-day interest in paise (day 1-based; final day absorbs rounding) */
+function dayPaise(i, day) {
+  const amt = paise(i.amount);
+  const totalCb = paise(i.cashbackAmount);
+  const days = Math.max(1, i.durationDays || 1);
+  const base = Math.floor(amt * (i.cashbackPct || 0) / 100 / days);
+  if (totalCb > 0) return day === days ? Math.max(0, totalCb - base * (days - 1)) : base;
+  return base;
+}
+/* how many daily periods have fully elapsed (server-corrected time) */
+function periodsElapsed(i) {
+  const days = Math.max(1, i.durationDays || 1);
+  const n = Math.floor((nowMs() - invStartMs(i)) / DAY_MS);
+  return Math.max(0, Math.min(days, n));
+}
+/* ms timestamp when period N falls due */
+function periodDueAt(i, n) { return invStartMs(i) + n * DAY_MS; }
+function isMatured(i) { return nowMs() >= periodDueAt(i, Math.max(1, i.durationDays || 1)); }
+function interestDone(i) { return (i.interestPaid || 0) >= Math.max(1, i.durationDays || 1); }
+
+/* ── Reconcile one investment: credit every due & unpaid daily period ── */
+async function reconcileInvestment(invId) {
+  const invRef = db.collection('investments').doc(invId);
+  const lockRef = db.collection('locks').doc('int_' + invId);
+  try {
+    const creditedPaise = await db.runTransaction(async tx => {
+      // Lock first — a second tab / device fails fast instead of double-crediting
+      const lock = await tx.get(lockRef);
+      const now = nowMs();
+      if (lock.exists) {
+        const t = lock.data().t;
+        const lockMs = t && t.toMillis ? t.toMillis() : (t && t.seconds ? t.seconds * 1000 : 0);
+        if (now - lockMs < 45000) throw 'locked';
+      }
+      const snap = await tx.get(invRef);
+      if (!snap.exists) throw 'gone';
+      const i = snap.data();
+      if (i.status !== 'active' || i.uid !== currentUser.uid) throw 'inactive';
+
+      const days = Math.max(1, i.durationDays || 1);
+      const paid = i.interestPaid || 0;
+      const due = periodsElapsed(i);
+      if (due <= paid) return 0; // nothing to do — most common path
+
+      let sum = 0;
+      for (let d = paid + 1; d <= due; d++) sum += dayPaise(i, d);
+      if (sum <= 0) {
+        // zero-interest plan — still advance the counter so we don't re-scan daily
+        tx.set(lockRef, { t: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+        tx.update(invRef, {
+          interestPaid: due,
+          lastInterestAt: firebase.firestore.FieldValue.serverTimestamp(),
+          dailyAmount: fromPaise(dayPaise(i, 1)),
+          dailyRate: (i.cashbackPct || 0) / days
+        });
+        return 0;
+      }
+
+      const userRef = db.collection('users').doc(currentUser.uid);
+      const txRef = db.collection('transactions').doc();
+      const nDays = due - paid;
+      const rupees = fromPaise(sum);
+      const accrued = Math.round(((i.accruedInterest || 0) + rupees) * 100) / 100;
+
+      tx.set(lockRef, { t: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      tx.update(invRef, {
+        interestPaid: due,
+        accruedInterest: accrued,
+        lastInterestAt: firebase.firestore.FieldValue.serverTimestamp(),
+        dailyAmount: fromPaise(dayPaise(i, 1)),
+        dailyRate: (i.cashbackPct || 0) / days
+      });
+      tx.update(userRef, {
+        balance: firebase.firestore.FieldValue.increment(rupees),
+        totalCashback: firebase.firestore.FieldValue.increment(rupees)
+      });
+      tx.set(txRef, {
+        uid: currentUser.uid, type: 'interest', amount: rupees, status: 'completed',
+        invId,
+        days: { from: paid + 1, to: due },
+        note: nDays === 1
+          ? `Daily interest · ${i.planName} (day ${due}/${days})`
+          : `Daily interest · ${i.planName} (days ${paid + 1}–${due}/${days})`,
+        userName: (userDoc && userDoc.data().name) || '',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      return sum;
+    });
+    return creditedPaise;
+  } catch (e) {
+    if (e !== 'locked' && e !== 'inactive' && e !== 'gone' && !(e && e.code === 'permission-denied'))
+      console.warn('interest reconcile failed:', invId, e);
+    return -1;
+  }
+}
+
+/* ── Engine loop: reconcile all active investments, then schedule the next run ── */
+let _engineTimer = null, _engineRunning = false;
+function interestEngineStart() {
+  interestEngineStop();
+  interestEngineRun();
+}
+function interestEngineStop() {
+  if (_engineTimer) { clearTimeout(_engineTimer); _engineTimer = null; }
+}
+async function interestEngineRun() {
+  if (_engineRunning || !currentUser) return;
+  _engineRunning = true;
+  try {
+    const snap = await db.collection('investments')
+      .where('uid', '==', currentUser.uid).where('status', '==', 'active').get();
+    let creditedTotal = 0, nextDue = Infinity;
+    for (const d of snap.docs) {
+      const i = d.data();
+      const paid = i.interestPaid || 0, due = periodsElapsed(i);
+      if (due > paid) {
+        const got = await reconcileInvestment(d.id);
+        if (got > 0) creditedTotal += got;
+      } else if (!interestDone(i)) {
+        nextDue = Math.min(nextDue, periodDueAt(i, paid + 1));
+      }
+      if (!interestDone(i)) nextDue = Math.min(nextDue, periodDueAt(i, (i.interestPaid || 0) + 1));
+    }
+    if (creditedTotal > 0) {
+      confetti(18);
+      toast(`Daily interest credited: +${inr2(fromPaise(creditedTotal))} 🎉`, 'ok');
+      if (currentView === 'plans') renderPlans();
+      if (currentView === 'wallet') renderWallet();
+      if (currentView === 'home') renderHome();
+    }
+    // Wake up exactly when the next period falls due (+2s margin), or re-check hourly
+    const delay = nextDue === Infinity ? 3600000 : Math.min(Math.max(nextDue - nowMs() + 2000, 60000), 3600000);
+    _engineTimer = setTimeout(interestEngineRun, delay);
+  } catch (e) {
+    _engineTimer = setTimeout(interestEngineRun, 5 * 60000); // back off on failure
+  } finally {
+    _engineRunning = false;
+  }
+}
+// Reconcile promptly when the tab regains focus (covers missed periods)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentUser) { syncServerTime(); interestEngineRun(); }
+});
+
+/* ══════════ COUNTDOWN REGISTRY ══════════
+   Timestamp-derived countdowns — never a naive decrement. One rAF-driven
+   1s interval updates every registered chip; zero → reconcile + re-render. */
+const CountdownRegistry = {
+  items: new Map(),
+  timer: null,
+  add(key, getTargetMs, el, onZero) {
+    if (!el) return;
+    this.items.set(key, { getTargetMs, el, onZero, fired: false });
+    this.start();
+    this.tick();
+  },
+  remove(key) { this.items.delete(key); },
+  clear() { this.items.clear(); if (this.timer) { clearInterval(this.timer); this.timer = null; } },
+  start() {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.tick(), 1000);
+  },
+  tick() {
+    if (!this.items.size) return;
+    const now = nowMs();
+    this.items.forEach((it, key) => {
+      if (!document.body.contains(it.el)) { this.items.delete(key); return; }
+      const target = it.getTargetMs();
+      let ms = target - now;
+      if (ms <= 0) {
+        it.el.querySelector('.cd-val').textContent = 'crediting…';
+        it.el.classList.add('cd-flip');
+        if (!it.fired) {
+          it.fired = true;
+          setTimeout(() => { if (it.onZero) it.onZero(); }, 1200);
+        }
+        return;
+      }
+      const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000), s = Math.floor(ms % 60000 / 1000);
+      const txt = (h > 0 ? h + 'h ' : '') + String(m).padStart(2, '0') + 'm ' + String(s).padStart(2, '0') + 's';
+      const v = it.el.querySelector('.cd-val');
+      if (v && v.textContent !== txt) v.textContent = txt;
+      it.el.classList.toggle('cd-soon', ms < 60000);
+    });
+  }
+};
+
 /* ══════════ PLANS ══════════ */
 async function renderPlans() {
   const el = $('#view-plans');
   el.innerHTML = `<div class="banner banner-purple">${IC.spark}
-      <div><h4>Savings Plans with Interest</h4>
-      <p>Save on your schedule, earn interest on completion. No false promises — full terms on every plan.</p></div>
+      <div><h4>Savings Plans with Daily Interest</h4>
+      <p>Interest lands in your wallet every 24 hours from the exact moment you join. Full terms on every plan.</p></div>
     </div>
     <div id="plans-list">${livePlans === null ? '<div class="skel skel-card"></div><div class="skel skel-card"></div>' : ''}</div>
     <div class="sec-head"><h3>My Active Plans</h3></div>
-    <div id="my-plans"><div class="skel skel-card" style="height:110px"></div></div>`;
+    <div id="my-plans"><div class="skel skel-card" style="height:130px"></div></div>`;
 
   drawPlansList();
 
@@ -451,38 +751,67 @@ async function renderPlans() {
     const mine = await db.collection('investments').where('uid', '==', currentUser.uid).get();
     const myEl = $('#my-plans'); if (!myEl) return;
     myEl.innerHTML = '';
+    CountdownRegistry.clear();
     const docs = mine.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0));
     if (!docs.length) myEl.innerHTML = `<div class="card empty">${IC.doc}<p>You haven't joined a plan yet.</p></div>`;
     docs.forEach(d => {
       const i = d.data();
       const chipCls = i.status === 'active' ? 'chip-green' : i.status === 'completed' ? 'chip-blue' : 'chip-amber';
-      const started = i.createdAt?.seconds ? i.createdAt.seconds * 1000 : Date.now();
-      const total = (i.durationDays || 1) * 864e5;
-      const maturesAt = new Date(started + total);
+      const started = invStartMs(i);
+      const days = Math.max(1, i.durationDays || 1);
+      const maturesAt = new Date(periodDueAt(i, days));
       const mdate = maturesAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-      const isDue = Date.now() >= started + total;
-      const pct = i.status === 'completed' ? 100 : Math.max(3, Math.min(100, Math.round((Date.now() - started) / total * 100)));
+      const isDue = i.status === 'active' && isMatured(i);
+      const pct = i.status === 'completed' ? 100
+        : Math.max(3, Math.min(100, Math.round((nowMs() - started) / (days * DAY_MS) * 100)));
+      const dayNow = Math.max(1, Math.min(days, Math.ceil((nowMs() - started) / DAY_MS)));
+      const accrued = i.accruedInterest || 0;
+      const paidN = i.interestPaid || 0;
       const rightMeta = i.status === 'completed' ? 'Paid out 🎉'
         : i.status === 'cancelled' ? 'Refunded'
         : isDue ? '✨ Ready for payout'
-        : 'Day ' + Math.max(1, Math.ceil((Date.now() - started) / 864e5)) + ' / ' + i.durationDays;
+        : 'Day ' + dayNow + ' / ' + days;
+
       const div = document.createElement('div');
-      div.className = 'card';
+      div.className = 'card inv-card';
       div.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <div style="min-width:0"><b style="font-size:.94rem">${esc(i.planName)}</b>
-          <div class="muted">Started ${fdate(i.createdAt)} · ${i.durationDays} days</div></div>
+          <div class="muted">Started ${fdt(i.createdAt)} · ${days} days</div></div>
           <span class="chip ${chipCls}">${esc(i.status)}</span></div>
         <div class="divider"></div>
         <div style="display:flex;justify-content:space-between;gap:8px;font-size:.8rem;flex-wrap:wrap">
           <span class="muted">Saved: <b style="color:var(--ink)">${inr(i.amount)}</b></span>
-          <span class="muted">Interest: <b style="color:var(--green)">+${inr(i.cashbackAmount)}</b></span></div>
+          <span class="muted">Total interest: <b style="color:var(--green)">+${inr2(i.cashbackAmount)}</b></span></div>
+        ${i.status === 'active' ? `
+        <div class="interest-strip">
+          <div class="is-cell"><small>Daily interest</small><b>+${inr2(fromPaise(dayPaise(i, 1)))}</b></div>
+          <div class="is-cell"><small>Credited so far</small><b class="is-acc">+${inr2(accrued)}</b><span class="is-days">${paidN}/${days} days paid</span></div>
+          ${interestDone(i)
+            ? `<div class="is-cell"><small>Interest</small><b style="color:var(--green)">Complete ✓</b></div>`
+            : `<div class="cd-chip" id="cd-${d.id}">
+                 <span class="cd-ic">${IC.timer}</span>
+                 <span class="cd-txt"><small>Next Interest</small><b class="cd-val">—</b></span>
+               </div>`}
+        </div>` : ''}
         <div class="mp-progress"><i style="width:${pct}%"></i></div>
         <div class="mp-meta"><span>${i.status === 'active' ? 'Matures ' + mdate : pct + '% of duration'}</span><span>${rightMeta}</span></div>
-        ${i.status === 'active' && isDue ? `<div class="upi-note" style="margin:10px 0 0">${IC.spark} <b>Plan matured!</b> Your ${inr(i.amount + (i.cashbackAmount || 0))} payout is being processed — it lands in your wallet shortly.</div>` : ''}`;
+        ${isDue ? `<div class="upi-note" style="margin:10px 0 0">${IC.spark} <b>Plan matured!</b> All interest is paid — your ${inr(i.amount)} principal is being released to your wallet shortly.</div>` : ''}`;
       myEl.appendChild(div);
+
+      // live countdown → exact timestamp of the next unpaid period
+      if (i.status === 'active' && !interestDone(i)) {
+        const chipEl = div.querySelector('#cd-' + d.id);
+        CountdownRegistry.add('cd-' + d.id,
+          () => periodDueAt(i, (i.interestPaid || 0) + 1),
+          chipEl,
+          async () => { await syncServerTime(); await reconcileInvestment(d.id); renderPlans(); });
+      }
     });
-  } catch (e) {}
+  } catch (e) {
+    const myEl = $('#my-plans');
+    if (myEl) myEl.innerHTML = `<div class="card empty">${IC.info}<p>Couldn't load your plans — check connection and reopen this tab.</p></div>`;
+  }
 }
 
 /* ── Plans list (driven by the live plans listener) ── */
@@ -494,12 +823,13 @@ function drawPlansList() {
   livePlans.forEach(p => list.appendChild(planCard(p)));
 }
 
-const PLAN_COLORS = [['#0BA968', '#34D399'], ['#2563EB', '#60A5FA'], ['#7C3AED', '#C084FC'], ['#E8930C', '#F5B93F']];
+const PLAN_COLORS = [['#0E9F6E', '#34D399'], ['#2F6BEF', '#60A5FA'], ['#3730A3', '#818CF8'], ['#B8912A', '#F2D06B']];
 const PLAN_ICONS = [IC.spark, IC.star, IC.zap, IC.gift];
 function planCard(p) {
   const idx = (p.minAmount || 0) % 97 % PLAN_COLORS.length;
   const [c1, c2] = PLAN_COLORS[idx];
-  const perks = p.perks && p.perks.length ? p.perks : ['Interest credited on plan completion', 'Withdraw anytime after maturity', 'Full transaction receipts'];
+  const perks = p.perks && p.perks.length ? p.perks : ['Interest credited every 24 hours', 'Withdraw anytime after maturity', 'Full transaction receipts'];
+  const dailyPct = p.durationDays ? (p.cashbackPct / p.durationDays) : 0;
   const div = document.createElement('div');
   div.className = 'plan-card';
   div.innerHTML = `
@@ -510,8 +840,9 @@ function planCard(p) {
     </div>
     <div class="pc-row">
       <div class="pc-cell"><small>Start with</small><b>${inr(p.minAmount)}</b></div>
-      <div class="pc-cell"><small>Interest</small><b style="color:var(--green)">${p.cashbackPct}%</b></div>
-      <div class="pc-cell"><small>Duration</small><b>${p.durationDays} days</b></div>
+      <div class="pc-cell"><small>Total Interest</small><b style="color:var(--green)">${p.cashbackPct}%</b></div>
+      <div class="pc-cell"><small>Daily</small><b style="color:var(--green)">${dailyPct.toFixed(2)}%</b></div>
+      <div class="pc-cell"><small>Duration</small><b>${p.durationDays}d</b></div>
     </div>
     <div class="pc-perks">${perks.map(k => `<div class="pc-perk">${IC.check}<span>${esc(k)}</span></div>`).join('')}</div>
     <button class="btn btn-primary btn-block" type="button">Start Saving ${inr(p.minAmount)}</button>`;
@@ -523,41 +854,59 @@ function joinPlan(planId, p) {
   const u = userDoc.data();
   const sheet = openSheet(`
     <div class="sheet-title">Join ${esc(p.name)}</div>
-    <div class="sheet-sub">Interest ${p.cashbackPct}% after ${p.durationDays} days · wallet balance ${inr(u.balance)}</div>
+    <div class="sheet-sub">${p.cashbackPct}% interest over ${p.durationDays} days — credited <b>daily</b> to your wallet · balance ${inr(u.balance)}</div>
     <div class="amount-input"><span>₹</span><input id="join-amt" type="number" inputmode="numeric" placeholder="${p.minAmount}" min="${p.minAmount}"></div>
     <div class="amount-quick">${[p.minAmount, p.minAmount * 2, p.minAmount * 5].map(a => `<button type="button" data-a="${a}">${inr(a)}</button>`).join('')}</div>
     <div class="upi-note"><b>How it works:</b> the amount moves from your wallet into the plan.
-    On completion you get your savings back <b>plus ${p.cashbackPct}% interest</b>. Early exit returns your principal — interest is only earned on completion.</div>
+    Every 24 hours from now, <b>${(p.cashbackPct / p.durationDays).toFixed(2)}%</b> of your amount lands back in your wallet as interest.
+    At maturity your principal is released too. Early exit returns your principal — already-paid interest is yours to keep.</div>
     <button class="btn btn-primary btn-block" id="join-go" type="button">Confirm & Start Plan</button>`);
   sheet.querySelectorAll('.amount-quick button').forEach(b => b.onclick = () => sheet.querySelector('#join-amt').value = b.dataset.a);
+  let _joinInFlight = false; // idempotency flag — prevents double-tap double-debit
   sheet.querySelector('#join-go').onclick = async () => {
+    if (_joinInFlight) return; // hard guard: ignore every tap while a commit is in-flight
     const btn = sheet.querySelector('#join-go');
     const amt = Number(sheet.querySelector('#join-amt').value);
     if (!amt || amt < p.minAmount) return toast(`Minimum for this plan is ${inr(p.minAmount)}`, 'err');
-    if (amt > u.balance) { closeSheet(); return toast('Insufficient balance — add money first', 'err'); }
+    _joinInFlight = true;
     btn.classList.add('loading'); btn.disabled = true;
     try {
       const interest = Math.round(amt * p.cashbackPct / 100 * 100) / 100;
-      const batch = db.batch();
-      const ref = db.collection('investments').doc();
-      batch.set(ref, { uid: currentUser.uid, planId, planName: p.name, amount: amt,
-        cashbackPct: p.cashbackPct, cashbackAmount: interest, durationDays: p.durationDays,
-        status: 'active', createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      batch.update(db.collection('users').doc(currentUser.uid), {
-        balance: firebase.firestore.FieldValue.increment(-amt),
-        totalSaved: firebase.firestore.FieldValue.increment(amt) });
-      batch.set(db.collection('transactions').doc(), {
-        uid: currentUser.uid, type: 'invest', amount: amt, status: 'completed',
-        note: `Joined ${p.name}`, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      await batch.commit();
+      const userRef = db.collection('users').doc(currentUser.uid);
+      const invRef = db.collection('investments').doc();
+      const txRef = db.collection('transactions').doc();
+      const days = Math.max(1, p.durationDays || 1);
+      // ATOMIC transaction: balance is re-read inside → stale-cache exploits and
+      // negative balances are structurally impossible (rules also cap self-debits).
+      await db.runTransaction(async tx => {
+        const uSnap = await tx.get(userRef);
+        const liveBalance = uSnap.exists ? (uSnap.data().balance || 0) : 0;
+        if (amt > liveBalance) throw 'insufficient';
+        tx.set(invRef, { uid: currentUser.uid, planId, planName: p.name, amount: amt,
+          cashbackPct: p.cashbackPct, cashbackAmount: interest, durationDays: p.durationDays,
+          dailyAmount: Math.round(amt * p.cashbackPct / 100 / days * 100) / 100,
+          dailyRate: Math.round(p.cashbackPct / days * 10000) / 10000,
+          interestPaid: 0, accruedInterest: 0, lastInterestAt: null,
+          status: 'active', createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        tx.update(userRef, {
+          balance: firebase.firestore.FieldValue.increment(-amt),
+          totalSaved: firebase.firestore.FieldValue.increment(amt) });
+        tx.set(txRef, {
+          uid: currentUser.uid, type: 'invest', amount: amt, status: 'completed',
+          note: `Joined ${p.name}`, userName: u.name || '',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      });
       closeSheet();
       confetti(34);
-      toast(`You're in! ${inr(interest)} interest on completion 🎉`, 'ok');
+      toast(`You're in! First interest credit in 24h — ${inr2(interest)} total 🎉`, 'ok');
+      interestEngineRun(); // schedule the wake-up for this new plan
       if (currentView === 'plans') renderPlans();
       if (currentView === 'home') renderHome();
     } catch (e) {
+      _joinInFlight = false;
       btn.classList.remove('loading'); btn.disabled = false;
-      toast('Could not join plan — try again', 'err');
+      if (e === 'insufficient') { closeSheet(); toast('Insufficient balance — add money first', 'err'); }
+      else toast('Could not join plan — try again', 'err');
     }
   };
 }
@@ -581,14 +930,14 @@ async function renderWallet() {
     <div id="bank-slot"></div>
 
     <div class="stat-grid">
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#0BA968,#34D399)">${IC.downLeft}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#0E9F6E,#34D399)">${IC.downLeft}</div>
         <div><small>Total Deposits</small><b>${inr(u.totalDeposits || 0)}</b></div></div>
       <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#E5484D,#F87171)">${IC.upRight}</div>
         <div><small>Total Withdrawn</small><b>${inr(u.totalWithdrawn || 0)}</b></div></div>
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.target}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.target}</div>
         <div><small>Total Saved</small><b>${inr(u.totalSaved || 0)}</b></div></div>
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#E8930C,#F5B93F)">${IC.gift}</div>
-        <div><small>Interest Earned</small><b>${inr(u.totalCashback || 0)}</b></div></div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#B8912A,#F2D06B)">${IC.gift}</div>
+        <div><small>Interest Earned</small><b>${inr2(u.totalCashback || 0)}</b></div></div>
     </div>
     <div class="sec-head"><h3>Transaction History</h3></div>
     <div class="card" style="padding:6px 18px" id="tx-list"><div class="skel skel-row"></div><div class="skel skel-row"></div><div class="skel skel-row"></div></div>`;
@@ -599,18 +948,18 @@ async function renderWallet() {
   renderBankSlot();
 
   try {
-    const tx = await db.collection('transactions').where('uid', '==', currentUser.uid).limit(30).get();
+    const tx = await db.collection('transactions').where('uid', '==', currentUser.uid).limit(60).get();
     const list = $('#tx-list'); if (!list) return;
-    const docs = tx.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0));
+    const docs = tx.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0)).slice(0, 30);
     if (!docs.length) { list.innerHTML = `<div class="empty">${IC.doc}<p>No transactions yet. Add money to get started!</p></div>`; return; }
     list.innerHTML = '';
     docs.forEach((d, i) => {
       const t = d.data();
       const isIn = ['deposit', 'interest', 'maturity', 'cashback', 'refund'].includes(t.type);
       const cls = (t.type === 'interest' || t.type === 'cashback') ? 'tx-cb' : isIn ? 'tx-in' : 'tx-out';
-      const icon = (t.type === 'interest' || t.type === 'cashback') ? IC.gift : t.type === 'maturity' ? IC.party : isIn ? IC.downLeft : IC.upRight;
+      const icon = t.type === 'interest' ? IC.timer : t.type === 'cashback' ? IC.gift : t.type === 'maturity' ? IC.party : isIn ? IC.downLeft : IC.upRight;
       const labels = { deposit: 'Wallet Deposit', withdraw: t.note || 'Withdrawal', invest: t.note || 'Plan Investment',
-                       interest: t.note || 'Interest Reward', maturity: t.note || 'Plan Maturity Payout',
+                       interest: t.note || 'Daily Interest', maturity: t.note || 'Plan Maturity Payout',
                        cashback: t.note || 'Cashback Reward', refund: t.note || 'Refund' };
       const chipCls = t.status === 'pending' ? 'chip-amber' : t.status === 'completed' ? 'chip-green' : 'chip-red';
       const row = document.createElement('div');
@@ -618,8 +967,8 @@ async function renderWallet() {
       row.style.animationDelay = Math.min(i * 40, 400) + 'ms';
       row.innerHTML = `
         <div class="tx-ic ${cls}">${icon}</div>
-        <div class="tx-mid"><b>${esc(labels[t.type] || t.type)}</b><small>${fdate(t.createdAt)} · #${d.id.slice(0, 8).toUpperCase()}${t.utr ? ' · UTR ' + esc(t.utr) : ''}</small></div>
-        <div class="tx-right"><b class="${isIn ? 'tx-amt-in' : 'tx-amt-out'}">${isIn ? '+' : '−'}${inr(t.amount)}</b>
+        <div class="tx-mid"><b>${esc(labels[t.type] || t.type)}</b><small>${fdt(t.createdAt)} · #${d.id.slice(0, 8).toUpperCase()}${t.utr ? ' · UTR ' + esc(t.utr) : ''}</small></div>
+        <div class="tx-right"><b class="${isIn ? 'tx-amt-in' : 'tx-amt-out'}">${isIn ? '+' : '−'}${inr2(t.amount)}</b>
         <span class="chip ${chipCls}" style="margin-top:3px">${esc(t.status)}</span></div>`;
       list.appendChild(row);
     });
@@ -660,8 +1009,8 @@ function renderBankSlot() {
         ${IC.arrowR}
       </button>`;
     $('#bd-add').onclick = () => bankEditor(null);
-  tilt3D('.bank-card');
   }
+  tilt3D('.bank-card'); // 3D tilt applies whether or not a bank card exists yet
 }
 
 /* ── Bank details add / edit ── */
@@ -724,6 +1073,7 @@ async function openDeposit() {
   sheet.querySelector('#dep-go').onclick = () => {
     const amt = Number(sheet.querySelector('#dep-amt').value);
     if (!amt || amt < 50) return toast('Minimum deposit is ₹50', 'err');
+    if (!Number.isFinite(amt) || amt > 1000000) return toast('Enter a valid amount', 'err');
     depositStepMethod(amt);
   };
 }
@@ -811,20 +1161,35 @@ function depositStepProof(amt, method) {
     } catch (err) { toast('Could not read image — try another', 'err'); }
   };
 
+  let _depInFlight = false;
   sheet.querySelector('#dep-submit').onclick = async () => {
+    if (_depInFlight) return;
     const btn = sheet.querySelector('#dep-submit');
-    const utr = sheet.querySelector('#dep-utr').value.trim();
+    const utr = sheet.querySelector('#dep-utr').value.trim().toUpperCase();
     if (!/^[A-Za-z0-9]{8,22}$/.test(utr)) return toast('Enter a valid UTR / reference number (8–22 characters)', 'err');
     if (!proofData) return toast('Please upload your payment screenshot', 'err');
+    _depInFlight = true;
     btn.classList.add('loading'); btn.disabled = true;
     showLoader('Submitting proof…');
     try {
-      await db.collection('transactions').add({
+      // ── Duplicate-UTR guard: the deterministic doc id dep_<UTR> makes the same
+      //    payment impossible to submit twice (across users, tabs and retries).
+      //    NOTE: a collection-wide where('utr') query is denied by the security
+      //    rules for non-admins, so the doc-id check below is the authoritative guard ──
+      const depositRef = db.collection('transactions').doc('dep_' + utr);
+      const existing = await depositRef.get();
+      if (existing.exists) {
+        hideLoader(); _depInFlight = false;
+        btn.classList.remove('loading'); btn.disabled = false;
+        return toast('This deposit was already submitted — check Transaction History.', 'err');
+      }
+      await depositRef.set({
         uid: currentUser.uid, type: 'deposit', amount: amt, status: 'pending',
         utr, proof: proofData,
         payMethod: { id: method.id, label: method.label || '', type: method.type,
           upiId: method.upiId || null, accountNumber: method.accountNumber || null },
         note: 'Awaiting payment verification',
+        userName: (userDoc && userDoc.data().name) || '',
         createdAt: firebase.firestore.FieldValue.serverTimestamp() });
       hideLoader();
       const ok = openSheet(`
@@ -837,7 +1202,7 @@ function depositStepProof(amt, method) {
       confetti(30);
       if (currentView === 'wallet') renderWallet();
     } catch (e) {
-      hideLoader();
+      hideLoader(); _depInFlight = false;
       btn.classList.remove('loading'); btn.disabled = false;
       toast('Submission failed — check connection & retry', 'err');
     }
@@ -872,6 +1237,7 @@ function openWithdraw() {
   const hasBank = bd && bd.accountNumber;
   const hasUpi = bd && bd.upiId;
   let dest = hasBank ? 'bank' : (hasUpi ? 'upi' : null);
+  let _wdInFlight = false; // idempotency flag — prevents double-tap double-debit
   const sheet = openSheet(`
     <div class="sheet-title">Withdraw Funds</div>
     <div class="sheet-sub">Available: ${inr(u.balance)} · paid within 24 hrs after review</div>
@@ -913,30 +1279,42 @@ function openWithdraw() {
   const go = sheet.querySelector('#wd-go');
   if (!go) return;
   go.onclick = async () => {
+    if (_wdInFlight) return; // hard guard: ignore every tap while a commit is in-flight
     const btn = go;
     const amt = Number(sheet.querySelector('#wd-amt').value);
     if (!amt || amt < 100) return toast('Minimum withdrawal is ₹100', 'err');
-    if (amt > u.balance) return toast('Amount exceeds available balance', 'err');
+    if (!Number.isFinite(amt)) return toast('Enter a valid amount', 'err');
     if (!dest) return toast('Choose where to receive the money', 'err');
+    _wdInFlight = true;
     btn.classList.add('loading'); btn.disabled = true;
     try {
       const destInfo = dest === 'bank'
         ? { method: 'bank', holderName: bd.holderName, bankName: bd.bankName, accountNumber: bd.accountNumber, ifsc: bd.ifsc }
         : { method: 'upi', upiId: bd.upiId };
-      const batch = db.batch();
-      batch.set(db.collection('transactions').doc(), {
-        uid: currentUser.uid, type: 'withdraw', amount: amt, status: 'pending',
-        withdrawTo: destInfo, note: dest === 'bank' ? `To ${bd.bankName} •••• ${String(bd.accountNumber).slice(-4)}` : 'To UPI: ' + bd.upiId,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      batch.update(db.collection('users').doc(currentUser.uid), {
-        balance: firebase.firestore.FieldValue.increment(-amt) });
-      await batch.commit();
+      const userRef = db.collection('users').doc(currentUser.uid);
+      const txRef = db.collection('transactions').doc();
+      // ATOMIC: balance re-read & validated inside the transaction — the hold can
+      // never exceed the real balance, even with two tabs racing.
+      await db.runTransaction(async tx => {
+        const uSnap = await tx.get(userRef);
+        const liveBalance = uSnap.exists ? (uSnap.data().balance || 0) : 0;
+        if (amt > liveBalance) throw 'insufficient';
+        tx.set(txRef, {
+          uid: currentUser.uid, type: 'withdraw', amount: amt, status: 'pending',
+          withdrawTo: destInfo,
+          note: dest === 'bank' ? `To ${bd.bankName} •••• ${String(bd.accountNumber).slice(-4)}` : 'To UPI: ' + bd.upiId,
+          userName: u.name || '',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        tx.update(userRef, { balance: firebase.firestore.FieldValue.increment(-amt) });
+      });
       closeSheet();
       toast('Withdrawal requested — paid within 24 hrs', 'ok');
       if (currentView === 'wallet') renderWallet();
     } catch (e) {
+      _wdInFlight = false;
       btn.classList.remove('loading'); btn.disabled = false;
-      toast('Request failed — try again', 'err');
+      if (e === 'insufficient') toast('Amount exceeds available balance', 'err');
+      else toast('Request failed — try again', 'err');
     }
   };
 }
@@ -965,33 +1343,45 @@ async function renderSettings() {
   const u = userDoc.data();
   const el = $('#view-settings');
   el.innerHTML = `
-    <div class="card profile-card">
-      <div class="profile-av">${esc((u.name || 'B')[0].toUpperCase())}</div>
-      <div><b>${esc(u.name)}</b><p>${esc(u.email)}<br>${esc(u.phone || '')}</p></div>
+    <div class="pf-hero">
+      <div class="pf-orb pf-orb-1"></div>
+      <div class="pf-orb pf-orb-2"></div>
+      <div class="pf-av"><span>${esc((u.name || 'B')[0].toUpperCase())}</span></div>
+      <div class="pf-info">
+        <b>${esc(u.name)}</b>
+        <p>${esc(u.email)}</p>
+        ${u.phone ? `<span class="pf-phone">${IC.phone} ${esc(u.phone)}</span>` : ''}
+      </div>
+      <button class="pf-edit" id="pf-edit" type="button" aria-label="Edit profile">${IC.edit}</button>
     </div>
-    <div class="card">
-      <div class="about-row"><div class="about-ic">${IC.gift}</div>
-        <div><b>Refer & Earn</b><p>Share your code — you both get a ₹25 reward when a friend completes their first plan.</p></div></div>
-      <div class="ref-box"><b>${esc(u.referralCode || '—')}</b>
-        <div>
-          <button class="btn btn-soft btn-sm" id="cp-ref" type="button">${IC.copy} Copy</button>
-          <button class="btn btn-green btn-sm" id="sh-ref" type="button">${IC.share} Share</button>
-        </div></div>
+
+    <div class="ref-card">
+      <div class="ref-head">
+        <div class="ref-ic">${IC.gift}</div>
+        <div><b>Refer & Earn ₹25</b><p>You both get rewarded when a friend completes their first plan.</p></div>
+      </div>
+      <div class="ref-code">
+        <div class="ref-code-val"><small>Your code</small><b>${esc(u.referralCode || '—')}</b></div>
+        <div class="ref-actions">
+          <button class="ref-btn" id="cp-ref" type="button">${IC.copy} Copy</button>
+          <button class="ref-btn ref-btn-gold" id="sh-ref" type="button">${IC.share} Share</button>
+        </div>
+      </div>
     </div>
 
     <div class="set-group"><h4>Account</h4>
-      <button class="set-item" data-s="edit" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.user}</div>
+      <button class="set-item" data-s="edit" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.user}</div>
         <div class="set-mid"><b>Edit Profile</b><small>Name &amp; phone number</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="bank" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#4C1DED,#A78BFA)">${IC.bank}</div>
+      <button class="set-item" data-s="bank" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#3730A3,#818CF8)">${IC.bank}</div>
         <div class="set-mid"><b>Bank Details</b><small>${u.bankDetails && u.bankDetails.accountNumber ? esc(u.bankDetails.bankName) + ' •••• ' + esc(String(u.bankDetails.accountNumber).slice(-4)) : 'Add account for withdrawals'}</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="kyc" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#0BA968,#34D399)">${IC.lock}</div>
+      <button class="set-item" data-s="kyc" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#0E9F6E,#34D399)">${IC.lock}</div>
         <div class="set-mid"><b>Security</b><small>Change password, sessions</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="tx" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#E8930C,#F5B93F)">${IC.doc}</div>
+      <button class="set-item" data-s="tx" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#B8912A,#F2D06B)">${IC.doc}</div>
         <div class="set-mid"><b>Statements</b><small>Full transaction history</small></div>${IC.arrowR}</button>
     </div>
 
     <div class="set-group"><h4>Preferences</h4>
-      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#7C3AED,#C084FC)">${IC.bell}</div>
+      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#3730A3,#818CF8)">${IC.bell}</div>
         <div class="set-mid"><b>Notifications</b><small>Interest &amp; plan alerts</small></div>
         <div class="switch ${store.get('bgNotif', 'on') !== 'off' ? 'on' : ''}" id="sw-notif" role="switch"></div></div>
       <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#0891B2,#22D3EE)">${IC.eye}</div>
@@ -1000,16 +1390,16 @@ async function renderSettings() {
     </div>
 
     <div class="set-group"><h4>Support & Legal</h4>
-      <button class="set-item" data-s="faq" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.chat}</div>
+      <button class="set-item" data-s="faq" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.chat}</div>
         <div class="set-mid"><b>Help & FAQ</b><small>Answers in one tap</small></div>${IC.arrowR}</button>
       <button class="set-item" data-s="terms" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#64748B,#94A3B8)">${IC.doc}</div>
         <div class="set-mid"><b>Terms &amp; Privacy</b><small>Plain-language, no fine print tricks</small></div>${IC.arrowR}</button>
       <button class="set-item" data-s="about" type="button"><div class="set-ic" style="background:var(--grad-btn)">${IC.info}</div>
-        <div class="set-mid"><b>About GodX</b><small>v4.0 · Made in India 🇮🇳</small></div>${IC.arrowR}</button>
+        <div class="set-mid"><b>About GodX</b><small>v8.0 · Made in India 🇮🇳</small></div>${IC.arrowR}</button>
     </div>
 
-    <button class="btn btn-danger btn-block" id="btn-logout" type="button">${IC.logout} Log Out</button>
-    <p class="muted" style="text-align:center;margin:14px 0 4px;font-weight:700">GodX v4.0 · 100% transparent micro-savings</p>`;
+    <button class="set-logout" id="btn-logout" type="button">${IC.logout} <span>Log Out</span></button>
+    <p class="set-ver">GodX v8.0 · daily-interest micro-savings</p>`;
 
   $('#cp-ref').onclick = () => { navigator.clipboard?.writeText(u.referralCode); toast('Referral code copied', 'ok'); };
   $('#sh-ref').onclick = async () => {
@@ -1019,6 +1409,7 @@ async function renderSettings() {
   };
   $('#sw-notif').onclick = e => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on', on); store.set('bgNotif', on ? 'on' : 'off'); toast(on ? 'Notifications on' : 'Notifications off'); };
   $('#sw-bal').onclick = e => { balanceVisible = !balanceVisible; store.set('bgBal', balanceVisible ? 'on' : 'off'); e.currentTarget.classList.toggle('on', balanceVisible); };
+  $('#pf-edit').onclick = () => settingsSheet('edit');
   $('#btn-logout').onclick = () => auth.signOut();
   $$('#view-settings .set-item[data-s]').forEach(b => b.onclick = () => settingsSheet(b.dataset.s));
 }
@@ -1069,8 +1460,8 @@ function settingsSheet(key) {
     const faqs = [
       ['Is GodX an investment app?', 'No. GodX is a micro-savings and interest rewards app. Your savings stay yours — interest comes from merchant partnerships, clearly shown on every plan. We never promise guaranteed high returns.'],
       ['How do deposits work?', 'Add money from the Wallet, pay to the official UPI/bank account shown in the app, then submit your UTR number and payment screenshot. Our team verifies and credits your wallet, usually within 30 minutes.'],
-      ['How does interest work?', 'Each plan shows an exact interest % and duration. Complete the plan duration and the interest is credited to your wallet automatically. Exit early and you simply get your savings back.'],
-      ['When can I withdraw?', 'Wallet balance can be withdrawn anytime after your plan completes, to your saved bank account or UPI ID. Requests are paid within 24 hours, with live status tracking.'],
+      ['How does daily interest work?', 'Each plan shows a total interest % and duration. The total is split into equal daily slices, and every 24 hours from the exact moment you joined, one slice is credited to your wallet automatically. Missed a day offline? It catches up the moment you open the app — never paid twice.'],
+      ['When can I withdraw?', 'Wallet balance can be withdrawn anytime, to your saved bank account or UPI ID. Requests are paid within 24 hours, with live status tracking.'],
       ['Is my money safe?', 'Deposits are processed by RBI-regulated payment partners, and all data is encrypted. Full receipts for every rupee.'],
       ['Are there any fees?', 'No joining fees, no withdrawal fees, no hidden charges. What you see is exactly what you get.']
     ];
@@ -1083,15 +1474,15 @@ function settingsSheet(key) {
     <div class="sheet-title">Terms & Privacy</div><div class="sheet-sub">The short, honest version</div>
     <div class="about-list">
       <div class="about-row"><div class="about-ic">${IC.checkCircle}</div><div><b>Your money is yours</b><p>Savings can be withdrawn per each plan's terms. We never lock funds beyond the stated duration.</p></div></div>
-      <div class="about-row"><div class="about-ic">${IC.checkCircle}</div><div><b>Interest, not "returns"</b><p>Rewards are interest credited on completed plans, funded by our partners — never promised investment yields.</p></div></div>
+      <div class="about-row"><div class="about-ic">${IC.checkCircle}</div><div><b>Interest, not "returns"</b><p>Rewards are interest credited daily on active plans, funded by our partners — never promised investment yields.</p></div></div>
       <div class="about-row"><div class="about-ic">${IC.checkCircle}</div><div><b>Your data stays private</b><p>We never sell personal data. Payments run over encrypted, regulated rails.</p></div></div>
     </div>`);
   if (key === 'about') openSheet(`
-    <div class="sheet-title">About GodX</div><div class="sheet-sub">Save smart. Earn interest.</div>
-    <div class="success-pop" style="background:var(--grad-soft)"><svg viewBox="0 0 48 48" style="width:42px;height:42px"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(91,45,224,.12)"/><path d="M24 9l11 10-11 20L13 19z" fill="#5B2DE0"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg></div>
+    <div class="sheet-title">About GodX</div><div class="sheet-sub">Save smart. Earn interest daily.</div>
+    <div class="success-pop" style="background:var(--grad-soft)"><svg viewBox="0 0 48 48" style="width:42px;height:42px"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(79,70,229,.12)"/><path d="M24 9l11 10-11 20L13 19z" fill="#4F46E5"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg></div>
     <p class="muted" style="line-height:1.7;text-align:center">GodX helps you build a savings habit with small, flexible plans
-    and real interest rewards. Built with transparency at its core — every fee, reward and transaction is visible
-    in the app.<br><br><b style="color:var(--ink)">Made with 💜 in India · v4.0</b></p>`);
+    and real daily interest rewards. Built with transparency at its core — every fee, reward and transaction is visible
+    in the app.<br><br><b style="color:var(--ink)">Made with 💜 in India · v8.0</b></p>`);
 }
 
 /* ══════════ NOTIFICATIONS ══════════ */
@@ -1100,11 +1491,11 @@ async function showNotifications() {
   try {
     const [ann, tx] = await Promise.all([
       db.collection('announcements').orderBy('createdAt', 'desc').limit(3).get(),
-      db.collection('transactions').where('uid', '==', currentUser.uid).where('status', '==', 'completed').limit(3).get()
+      db.collection('transactions').where('uid', '==', currentUser.uid).where('status', '==', 'completed').limit(4).get()
     ]);
     let h = '<div class="about-list">';
     tx.forEach(d => { const t = d.data();
-      h += `<div class="about-row"><div class="about-ic">${IC.checkCircle}</div><div><b style="text-transform:capitalize">${esc(t.type)} ${esc(t.status)}</b><p>${inr(t.amount)} · ${fdate(t.createdAt)}</p></div></div>`; });
+      h += `<div class="about-row"><div class="about-ic">${t.type === 'interest' ? IC.timer : IC.checkCircle}</div><div><b style="text-transform:capitalize">${esc(t.note || t.type)}</b><p>${inr2(t.amount)} · ${fdt(t.createdAt)}</p></div></div>`; });
     ann.forEach(d => { const a = d.data();
       h += `<div class="about-row"><div class="about-ic">${IC.bell}</div><div><b>${esc(a.title)}</b><p>${esc(a.body)}</p></div></div>`; });
     if (h === '<div class="about-list">') h += `<div class="empty" style="padding:20px 0">${IC.bell}<p>No notifications yet — you're all caught up!</p></div>`;
@@ -1112,4 +1503,265 @@ async function showNotifications() {
   } catch (e) {
     s.querySelector('#notif-body').innerHTML = `<div class="empty" style="padding:20px 0">${IC.info}<p>Couldn't load notifications.</p></div>`;
   }
+}
+
+/* ══════════ SUPPORT — FAQ center + live chat with admin ══════════ */
+const SUPPORT_FAQS = [
+  { c: 'Getting Started', q: 'What is GodX?', a: 'GodX is a micro-savings and interest rewards app. You save small amounts in flexible plans, and interest is credited to your wallet daily. No false promises — full terms on every plan.' },
+  { c: 'Getting Started', q: 'How do I create an account?', a: 'Tap Sign Up on the login screen, enter your name, phone, email and a password (min 6 characters). If a friend gave you a referral code, add it — you both earn ₹25 after your first plan completes.' },
+  { c: 'Getting Started', q: 'Is there a minimum balance to start?', a: 'No minimum to open an account. Each plan shows its own starting amount (e.g. ₹300) on the plan card — that is all you need in your wallet to join it.' },
+  { c: 'Plans & Interest', q: 'How do savings plans work?', a: 'Pick a plan, choose an amount, and it moves from your wallet into the plan for the stated duration. Interest is split into daily slices and credited to your wallet every 24 hours from the exact time you joined. At maturity your principal is released too.' },
+  { c: 'Plans & Interest', q: 'When exactly is my daily interest credited?', a: 'Exactly 24 hours after you joined, and every 24 hours after that. Joined at 2:00 PM? Your interest lands at 2:00 PM each day — never at midnight. Every active plan shows a live "Next Interest" countdown.' },
+  { c: 'Plans & Interest', q: 'What if I don\'t open the app for a few days?', a: 'Nothing is lost. The moment you open the app (or the admin panel runs its daily pass), every missed daily credit is caught up in one go — safely, and never twice.' },
+  { c: 'Plans & Interest', q: 'Can I exit a plan before it completes?', a: 'Plans run for their stated duration. If you have an emergency, start a support chat and we will review an early exit — you always get your principal back; already-paid daily interest is yours to keep.' },
+  { c: 'Plans & Interest', q: 'Where do I see my active plans?', a: 'Open the Plans tab and scroll to "My Active Plans" — each card shows the amount saved, daily interest, total credited so far, a live countdown to the next credit, a progress bar, and the maturity date.' },
+  { c: 'Deposits', q: 'How do I add money to my wallet?', a: 'Tap Add Money on Home or Wallet → enter an amount (min ₹50) → pay to the official UPI ID or bank account shown → enter your UTR / reference number and upload the payment screenshot. We verify and credit your wallet.' },
+  { c: 'Deposits', q: 'How long does a deposit take to reflect?', a: 'Usually under 30 minutes after you submit the UTR and screenshot. Watch the status live in Wallet → Transaction History — it flips from pending to completed the moment it is verified.' },
+  { c: 'Deposits', q: 'What is a UTR number and where do I find it?', a: 'UTR is the unique 12-digit reference for your payment. In GPay / PhonePe / Paytm, open the payment details of the transaction you made — the UTR / UPI Ref No is listed there. Copy it exactly into the deposit form.' },
+  { c: 'Withdrawals', q: 'How do I withdraw my money?', a: 'First add your bank account or UPI ID in Wallet → My Bank Account. Then tap Withdraw, enter an amount (min ₹100), pick your destination and submit. Requests are reviewed for security and paid within 24 hours.' },
+  { c: 'Withdrawals', q: 'Why was my withdrawal rejected?', a: 'Most rejections are due to a bank detail mismatch (wrong IFSC or account number). The full amount is instantly refunded to your wallet — fix your bank details in Wallet and request again, or chat with us below.' },
+  { c: 'Account & Security', q: 'Is my money and data safe?', a: 'Yes. All data is encrypted, deposits are processed via regulated payment partners, and every rupee has a visible receipt in your transaction history. We never sell personal data.' },
+  { c: 'Account & Security', q: 'How do I change my password?', a: 'Go to Settings → Security → "Email Me a Reset Link". We send a secure password-reset link to your registered email. You can also use "Forgot password?" on the login screen.' },
+  { c: 'Referrals', q: 'How does the referral reward work?', a: 'Share your code from Settings or the Refer button on Home. When a friend signs up with your code and completes their first plan, you BOTH receive a ₹25 reward in your wallets automatically.' }
+];
+
+function renderSupport() {
+  const el = $('#view-support');
+  el.innerHTML = `
+    <div class="sup-hero">
+      <div class="sup-orb sup-orb-1"></div>
+      <div class="sup-orb sup-orb-2"></div>
+      <div class="sup-hero-top">
+        <div class="sup-hero-ic">${IC.headset}</div>
+        <div class="sup-hero-txt">
+          <b>Help & Support</b>
+          <span><span class="online-dot"></span> Team online · replies in minutes</span>
+        </div>
+      </div>
+      <p class="sup-hero-sub">Instant answers below — or chat live with us. Send messages, photos &amp; files.</p>
+      <button class="sup-start" id="chat-new" type="button">${IC.chat} <span>Start Live Chat</span></button>
+    </div>
+
+    <div id="chat-list"></div>
+
+    <div class="sec-head"><h3>Frequently Asked Questions</h3></div>
+    <div class="card faq-card">
+      <div class="sup-search"><input id="faq-q" placeholder="Search a question… (e.g. withdraw, UTR)"></div>
+      <div class="sup-cats" id="faq-cats"></div>
+      <div id="faq-list"></div>
+    </div>`;
+
+  $('#chat-new').onclick = startSupportChat;
+  renderChatList();
+
+  let curCat = 'All', curQ = '';
+  const cats = ['All', ...new Set(SUPPORT_FAQS.map(f => f.c))];
+  const draw = () => {
+    const q = curQ.toLowerCase();
+    const list = SUPPORT_FAQS.filter(f =>
+      (curCat === 'All' || f.c === curCat) &&
+      (!q || f.q.toLowerCase().includes(q) || f.a.toLowerCase().includes(q)));
+    $('#faq-cats').innerHTML = cats.map(c =>
+      `<button class="sup-cat ${c === curCat ? 'on' : ''}" data-c="${esc(c)}" type="button">${esc(c)}</button>`).join('');
+    $$('#faq-cats .sup-cat').forEach(b => b.onclick = () => { curCat = b.dataset.c; draw(); });
+    $('#faq-list').innerHTML = list.length ? list.map(f => `
+      <div class="faq-item"><button class="faq-q" type="button">${esc(f.q)} ${IC.chevD}</button>
+      <div class="faq-a"><span class="faq-tag">${esc(f.c)}</span><br>${esc(f.a)}</div></div>`).join('')
+      : `<div class="empty" style="padding:24px 10px">${IC.info}<p>No answers match — try different words, or start a chat above.</p></div>`;
+    $$('#faq-list .faq-q').forEach(x => x.onclick = () => x.parentElement.classList.toggle('open'));
+  };
+  $('#faq-q').oninput = e => { curQ = e.target.value; draw(); };
+  draw();
+}
+
+/* live list of the user's own support chats — view-scoped listener (no leaks) */
+function renderChatList() {
+  const q = db.collection('supportChats').where('uid', '==', currentUser.uid);
+  viewUnsub.push(q.onSnapshot(snap => {
+    const box = $('#chat-list');
+    if (!box) return;
+    const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    const hero = $('#chat-new');
+    const open = chats.find(c => c.status === 'open');
+    if (hero) {
+      hero.disabled = !!open;
+      hero.innerHTML = open ? `${IC.clock} <span>Chat Active — Tap to Open</span>` : `${IC.chat} <span>Start Live Chat</span>`;
+      hero.onclick = open ? () => openChatView(open.id) : startSupportChat;
+    }
+    if (!chats.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="sec-head" style="margin-top:18px"><h3>Your Chats</h3></div>` + chats.slice(0, 5).map(c => `
+      <button class="card chat-card" data-c="${c.id}" type="button">
+        <div class="cc-ic ${c.status}">${IC.chat}${c.status === 'open' ? '<i class="cc-live-dot"></i>' : ''}</div>
+        <div class="cc-mid">
+          <b>Support Chat ${c.status === 'open' ? '<span class="chip chip-green">Live</span>' : '<span class="chip chip-red">Ended</span>'}</b>
+          <small>${c.lastKind === 'image' ? '📷 Photo' : c.lastKind === 'file' ? '📎 ' + esc(c.lastText || 'File') : esc(c.lastText || 'Chat started')} · ${fdate(c.lastAt || c.createdAt)}</small>
+        </div>
+        ${c.userUnread ? `<span class="cc-unread">${c.userUnread > 9 ? '9+' : c.userUnread}</span>` : ''}
+        ${IC.arrowR}
+      </button>`).join('');
+    $$('#chat-list .chat-card').forEach(x => x.onclick = () => openChatView(x.dataset.c));
+  }, () => {}));
+}
+
+async function startSupportChat() {
+  showLoader('Opening chat…');
+  try {
+    const u = userDoc.data();
+    const existing = await db.collection('supportChats')
+      .where('uid', '==', currentUser.uid).where('status', '==', 'open').get();
+    if (!existing.empty) { hideLoader(); return openChatView(existing.docs[0].id); }
+    const ref = await db.collection('supportChats').add({
+      uid: currentUser.uid, userName: u.name || 'User', userEmail: u.email || '',
+      status: 'open', userUnread: 0, adminUnread: 0,
+      lastText: '', lastKind: 'text',
+      lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    hideLoader();
+    openChatView(ref.id);
+  } catch (e) { hideLoader(); toast('Could not start chat — try again', 'err'); }
+}
+
+/* ══════════ PREMIUM CHAT ROOM (user side) ══════════
+   Controlled logo, Inter/Manrope typography, distinct bubbles,
+   support badge, timestamps, entrance animations, loading / error /
+   retry states, dedupe-safe sending, unread sync. */
+function openChatView(cid) {
+  const room = document.createElement('div');
+  room.className = 'chat-room';
+  room.innerHTML = `
+    <div class="chat-head">
+      <button class="chat-back" id="ch-back" type="button" aria-label="Back">${IC.chevL}</button>
+      <div class="chat-head-logo">
+        <svg viewBox="0 0 48 48" width="22" height="22"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(255,255,255,.16)"/><path d="M24 9l11 10-11 20L13 19z" fill="#fff"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#F2D06B" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg>
+      </div>
+      <div class="chat-head-info"><b>GodX Support <span class="sup-badge">${IC.badge} Official</span></b>
+        <small id="ch-status"><span class="online-dot"></span> Online · typically replies in minutes</small></div>
+    </div>
+    <div class="chat-msgs" id="ch-msgs">
+      <div class="chat-loading"><div class="cl-dots"><i></i><i></i><i></i></div><span>Loading conversation…</span></div>
+    </div>
+    <div class="chat-closed-bar hidden" id="ch-closedbar">
+      <span>This chat was ended by support.</span>
+      <button class="btn btn-primary btn-sm" id="ch-new2" type="button">New Chat</button>
+    </div>
+    <div class="chat-compose" id="ch-compose">
+      <input type="file" id="ch-file" hidden>
+      <div class="chat-compose-inner">
+        <button class="chat-attach" id="ch-attach" type="button" aria-label="Attach a file">${IC.paperclip}</button>
+        <input class="chat-input" id="ch-text" placeholder="Type a message…" autocomplete="off" maxlength="800">
+        <button class="chat-send" id="ch-send" type="button" aria-label="Send">${IC.send}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(room);
+  let roomDead = false, firstPaint = true, pendingEcho = 0;
+  const kill = () => {
+    if (roomDead) return;
+    roomDead = true;
+    roomUnsub.forEach(u => { try { u(); } catch (e) {} });
+    room.classList.add('chat-room-out');
+    setTimeout(() => room.remove(), 220);
+  };
+  const roomUnsub = [];
+  room.querySelector('#ch-back').onclick = kill;
+  room.querySelector('#ch-new2').onclick = () => { kill(); startSupportChat(); };
+
+  /* live chat doc — detects admin ending or deleting the chat */
+  roomUnsub.push(db.collection('supportChats').doc(cid).onSnapshot(s => {
+    if (roomDead) return;
+    if (!s.exists) { kill(); toast('This chat was deleted by support'); if (currentView === 'support') renderSupport(); return; }
+    const c = s.data();
+    const closed = c.status !== 'open';
+    room.querySelector('#ch-compose').classList.toggle('hidden', closed);
+    room.querySelector('#ch-closedbar').classList.toggle('hidden', !closed);
+    const st = room.querySelector('#ch-status');
+    if (st) st.innerHTML = closed ? 'Chat ended' : '<span class="online-dot"></span> Online · typically replies in minutes';
+    if ((c.userUnread || 0) > 0) db.collection('supportChats').doc(cid).update({ userUnread: 0 }).catch(() => {});
+  }, () => {}));
+
+  /* messages — live, deduped, with error state + retry */
+  roomUnsub.push(db.collection('supportChats').doc(cid).collection('messages').limit(300).onSnapshot(snap => {
+    if (roomDead) return;
+    const box = room.querySelector('#ch-msgs');
+    if (!box) return;
+    const seen = new Set();
+    const msgs = snap.docs.filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+      .map(d => d.data())
+      .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0) || (a.createdAt?.nanoseconds || 0) - (b.createdAt?.nanoseconds || 0));
+    if (!msgs.length) {
+      box.innerHTML = `<div class="chat-empty">
+        <div class="ce-logo"><svg viewBox="0 0 48 48" width="34" height="34"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(79,70,229,.1)"/><path d="M24 9l11 10-11 20L13 19z" fill="#4F46E5"/></svg></div>
+        <b>Say hello 👋</b><p>Describe your issue — you can attach screenshots or files too. We typically reply within minutes.</p></div>`;
+      return;
+    }
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
+    box.innerHTML = msgs.map((m, ix) => {
+      const mine = m.sender === 'user';
+      let body = '';
+      if (m.kind === 'image' && m.fileData)
+        body += `<img class="chat-img" src="${m.fileData}" alt="Shared image">`;
+      else if (m.kind === 'file' && m.fileData)
+        body += `<a class="chat-file" href="${m.fileData}" download="${esc(m.fileName || 'file')}">${IC.file}<span>${esc(m.fileName || 'Attachment')}</span></a>`;
+      if (m.text) body += esc(m.text);
+      const pending = !m.createdAt;
+      return `<div class="chat-msg ${mine ? 'mine' : 'theirs'} ${pending ? 'pending' : ''}" style="animation-delay:${firstPaint ? Math.min(ix * 30, 240) : 0}ms">${body}
+        <span class="chat-time">${mine ? 'You' : 'Support'} · ${pending ? 'sending…' : ftime(m.createdAt)}${mine && !pending ? ' ✓' : ''}</span></div>`;
+    }).join('');
+    firstPaint = false;
+    if (atBottom || pendingEcho > 0) { box.scrollTop = box.scrollHeight; pendingEcho = 0; }
+  }, () => {
+    if (roomDead) return;
+    const box = room.querySelector('#ch-msgs');
+    if (box) box.innerHTML = `<div class="chat-empty">${IC.alert}<b>Couldn't load messages</b>
+      <p>Check your connection.</p><button class="btn btn-primary btn-sm" id="ch-retry" type="button">${IC.refresh} Retry</button></div>`;
+    const r = box && box.querySelector('#ch-retry');
+    if (r) r.onclick = () => { kill(); openChatView(cid); };
+  }));
+
+  const sendMsg = async payload => {
+    pendingEcho++;
+    try {
+      const batch = db.batch();
+      batch.set(db.collection('supportChats').doc(cid).collection('messages').doc(), {
+        sender: 'user', createdAt: firebase.firestore.FieldValue.serverTimestamp(), ...payload });
+      batch.update(db.collection('supportChats').doc(cid), {
+        lastText: payload.text || payload.fileName || (payload.kind === 'image' ? '📷 Photo' : '📎 File'),
+        lastKind: payload.kind || 'text',
+        lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+        adminUnread: firebase.firestore.FieldValue.increment(1) });
+      await batch.commit();
+    } catch (e) { pendingEcho = 0; toast('Message failed — check connection', 'err'); }
+  };
+  const doSend = () => {
+    const inp = room.querySelector('#ch-text');
+    const t = inp.value.trim();
+    if (!t) return;
+    inp.value = '';
+    inp.focus();
+    sendMsg({ kind: 'text', text: t });
+  };
+  room.querySelector('#ch-send').onclick = doSend;
+  room.querySelector('#ch-text').addEventListener('keydown', e => { if (e.key === 'Enter') doSend(); });
+  room.querySelector('#ch-attach').onclick = () => room.querySelector('#ch-file').click();
+  room.querySelector('#ch-file').onchange = async e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    showLoader('Attaching…');
+    try {
+      if (/^image\//.test(f.type)) {
+        const data = await readImageCompressed(f, 800, .7);
+        if (data.length > 700000) { hideLoader(); return toast('Image too large — crop it smaller and retry', 'err'); }
+        await sendMsg({ kind: 'image', fileData: data, fileName: f.name, fileSize: f.size, mime: 'image/jpeg' });
+      } else {
+        if (f.size > 700 * 1024) { hideLoader(); return toast('File too large — max ~700 KB', 'err'); }
+        const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+        await sendMsg({ kind: 'file', fileData: data, fileName: f.name, fileSize: f.size, mime: f.type || 'file' });
+      }
+      hideLoader();
+    } catch (err) { hideLoader(); toast('Could not attach — try again', 'err'); }
+  };
+  // auto-focus input on desktop
+  setTimeout(() => { try { if (window.innerWidth > 640) room.querySelector('#ch-text').focus(); } catch (e) {} }, 350);
 }
