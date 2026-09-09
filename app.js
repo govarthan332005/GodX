@@ -381,7 +381,7 @@ function bindUserListener() {
    Plans, announcements, payment methods & home content update LIVE
    the moment the admin changes them — no app restart, and no
    Firestore composite index required (sorting done client-side). */
-let livePlans = null, liveAnnouncements = null, liveContent = null;
+let livePlans = null, liveAnnouncements = null, liveContent = null, liveReferral = null, liveShareCfg = null;
 
 function bindContentListeners() {
   // Plans (admin-edited) — live
@@ -410,6 +410,117 @@ function bindContentListeners() {
     liveContent = d.exists ? d.data() : {};
     if (currentView === 'home') drawAppContent();
   }));
+
+  // Referral settings — admin-editable (amount + trigger + description) — live
+  unsub.push(db.collection('appContent').doc('referral').onSnapshot(d => {
+    liveReferral = d.exists ? d.data() : {};
+  }));
+
+  // Share settings — admin-editable share message + link + enabled platforms — live
+  unsub.push(db.collection('appContent').doc('share').onSnapshot(d => {
+    liveShareCfg = d.exists ? d.data() : {};
+  }));
+}
+
+/* ══════════ REFERRAL / SHARE HELPERS ══════════ */
+function refCfg() {
+  const r = liveReferral || {};
+  return {
+    referrerAmount: Number(r.referrerAmount ?? 25),
+    referredAmount: Number(r.referredAmount ?? 25),
+    trigger: r.trigger || 'deposit', // 'deposit' | 'first_plan'
+    minDeposit: Number(r.minDeposit ?? 0),
+    title: r.title || 'Refer & Earn',
+    description: r.description || 'Share your code — you both get a reward when a friend joins!',
+    enabled: r.enabled !== false
+  };
+}
+function shareCfg() {
+  const s = liveShareCfg || {};
+  const u = userDoc ? userDoc.data() : {};
+  const code = (u && u.referralCode) || '';
+  const rc = refCfg();
+  const defaultMsg = `Join me on GodX — save small amounts, earn real interest! 💜\n\n🎁 Use my referral code ${code} at signup and we BOTH get ₹${rc.referredAmount}!\n\nDownload now:`;
+  const link = (s.shareLink || window.location.origin || 'https://godx.app').trim();
+  const rawMsg = (s.shareMessage && String(s.shareMessage).trim()) || defaultMsg;
+  // token replacement: {code}, {link}, {referrerAmount}, {referredAmount}, {name}
+  const msg = rawMsg
+    .replace(/\{code\}/g, code)
+    .replace(/\{link\}/g, link)
+    .replace(/\{referrerAmount\}/g, rc.referrerAmount)
+    .replace(/\{referredAmount\}/g, rc.referredAmount)
+    .replace(/\{name\}/g, u.name || '');
+  return {
+    link, message: msg, code,
+    platforms: s.platforms || { whatsapp: true, instagram: true, telegram: true, facebook: true, twitter: true, sms: true, email: true, copy: true }
+  };
+}
+function shareOn(platform) {
+  const cfg = shareCfg();
+  const encMsg = encodeURIComponent(cfg.message + '\n' + cfg.link);
+  const encMsgOnly = encodeURIComponent(cfg.message);
+  const encLink = encodeURIComponent(cfg.link);
+  const urls = {
+    whatsapp: `https://wa.me/?text=${encMsg}`,
+    telegram: `https://t.me/share/url?url=${encLink}&text=${encMsgOnly}`,
+    facebook: `https://www.facebook.com/sharer/sharer.php?u=${encLink}&quote=${encMsgOnly}`,
+    twitter: `https://twitter.com/intent/tweet?text=${encMsg}`,
+    sms: `sms:?&body=${encMsg}`,
+    email: `mailto:?subject=${encodeURIComponent('Join me on GodX')}&body=${encMsg}`
+  };
+  if (platform === 'instagram') {
+    // Instagram has no direct web share — copy the message and open Instagram
+    navigator.clipboard?.writeText(cfg.message + '\n' + cfg.link);
+    toast('Message copied — opening Instagram, paste in your story/DM!', 'ok');
+    setTimeout(() => { try { window.open('https://www.instagram.com/', '_blank'); } catch (e) {} }, 400);
+    return;
+  }
+  if (platform === 'copy') {
+    navigator.clipboard?.writeText(cfg.message + '\n' + cfg.link);
+    toast('Invite message copied — paste anywhere!', 'ok');
+    return;
+  }
+  if (platform === 'native') {
+    if (navigator.share) { try { navigator.share({ title: 'GodX', text: cfg.message, url: cfg.link }); } catch (e) {} }
+    else { navigator.clipboard?.writeText(cfg.message + '\n' + cfg.link); toast('Invite copied!', 'ok'); }
+    return;
+  }
+  if (urls[platform]) {
+    try { window.open(urls[platform], '_blank'); } catch (e) { navigator.clipboard?.writeText(cfg.message + '\n' + cfg.link); toast('Copied invite — paste to share!', 'ok'); }
+  }
+}
+function openSharePicker() {
+  const cfg = shareCfg();
+  const rc = refCfg();
+  const p = cfg.platforms || {};
+  const items = [
+    { k: 'whatsapp', name: 'WhatsApp', color: '#25D366', ic: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.3c-.3-.1-1.7-.8-2-.9-.3-.1-.5-.1-.7.1-.2.3-.8.9-.9 1.1-.2.2-.3.2-.6.1s-1.2-.5-2.3-1.4c-.9-.7-1.4-1.7-1.6-2s0-.4.1-.5c.1-.1.3-.3.4-.5.1-.2.2-.3.3-.5s.1-.4 0-.5-.7-1.7-1-2.3c-.3-.6-.5-.5-.7-.5H7.9c-.2 0-.5.1-.7.3-.2.3-1 1-1 2.4s1 2.8 1.2 3c.2.2 2 3.1 4.9 4.2 2.9 1.2 2.9.8 3.4.7.5 0 1.7-.7 2-1.4.3-.7.3-1.2.2-1.4-.1-.1-.3-.2-.6-.3zM12 2C6.5 2 2 6.5 2 12c0 1.8.5 3.5 1.3 5L2 22l5.2-1.4c1.5.8 3.1 1.3 4.8 1.3 5.5 0 10-4.5 10-10S17.5 2 12 2z"/></svg>' },
+    { k: 'instagram', name: 'Instagram', color: '#E1306C', ic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 11.4a4 4 0 1 1-8 .1 4 4 0 0 1 8-.1z"/><line x1="17.5" y1="6.5" x2="17.5" y2="6.5"/></svg>' },
+    { k: 'telegram', name: 'Telegram', color: '#0088CC', ic: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 3 2 10l7 2 3 8 3-5 6 5 3-17z"/></svg>' },
+    { k: 'facebook', name: 'Facebook', color: '#1877F2', ic: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 12a10 10 0 1 0-11.6 9.9v-7H8v-2.9h2.4V9.8c0-2.4 1.4-3.7 3.6-3.7 1 0 2.1.2 2.1.2v2.3h-1.2c-1.2 0-1.5.7-1.5 1.5v1.8h2.6l-.4 2.9h-2.2v7A10 10 0 0 0 22 12z"/></svg>' },
+    { k: 'twitter', name: 'X / Twitter', color: '#0F172A', ic: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 3H22l-7.5 8.6L23 21h-6.8l-5.3-6.7L4.7 21H1.6l8-9.2L1 3h6.9l4.8 6.2zM17.7 19h1.8L6.4 4.9H4.5z"/></svg>' },
+    { k: 'sms', name: 'SMS', color: '#16A34A', ic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' },
+    { k: 'email', name: 'Email', color: '#2563EB', ic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m22 7-10 6L2 7"/></svg>' },
+    { k: 'copy', name: 'Copy Link', color: '#64748B', ic: IC.copy }
+  ].filter(x => p[x.k] !== false);
+
+  const s = openSheet(`
+    <div class="sheet-title">Share GodX 💜</div>
+    <div class="sheet-sub">You earn <b>₹${rc.referrerAmount}</b> and your friend gets <b>₹${rc.referredAmount}</b> when they ${rc.trigger === 'first_plan' ? 'complete their first plan' : 'make their first deposit'}!</div>
+    <div class="share-code-box">
+      <div><small>Your Referral Code</small><b>${esc(cfg.code || '—')}</b></div>
+      <button class="btn btn-soft btn-sm" id="sh-cpcode" type="button">${IC.copy} Copy</button>
+    </div>
+    <div class="share-preview"><small>MESSAGE PREVIEW</small><p>${esc(cfg.message)}</p><a href="${esc(cfg.link)}" target="_blank">${esc(cfg.link)}</a></div>
+    <div class="share-grid">
+      ${items.map(x => `<button class="share-item" data-sh="${x.k}" type="button" style="--sc:${x.color}">
+         <span class="share-ic" style="background:${x.color}">${x.ic}</span>
+         <span>${esc(x.name)}</span></button>`).join('')}
+    </div>
+    ${navigator.share ? '<button class="btn btn-soft btn-block" id="sh-native" type="button" style="margin-top:10px">' + IC.share + ' More options…</button>' : ''}`);
+  s.querySelector('#sh-cpcode').onclick = () => { navigator.clipboard?.writeText(cfg.code); toast('Referral code copied', 'ok'); };
+  s.querySelectorAll('[data-sh]').forEach(b => b.onclick = () => shareOn(b.dataset.sh));
+  const nb = s.querySelector('#sh-native'); if (nb) nb.onclick = () => shareOn('native');
 }
 
 /* ══════════ HEADER ══════════ */
@@ -489,9 +600,9 @@ async function renderHome() {
 
   if (balanceVisible) countUp($('#bh-amt'), Number(u.balance || 0));
   $('#bal-eye').onclick = () => { balanceVisible = !balanceVisible; store.set('bgBal', balanceVisible ? 'on' : 'off'); renderHome(); };
-  $$('#view-home .quick-item').forEach(b => b.onclick = () => {
+    $$('#view-home .quick-item').forEach(b => b.onclick = () => {
     ({ save: () => openDeposit(), plans: () => switchView('plans'),
-       withdraw: () => openWithdraw(), refer: () => showRefer() })[b.dataset.q]();
+       withdraw: () => openWithdraw(), refer: () => openSharePicker() })[b.dataset.q]();
   });
   $('#see-plans').onclick = () => switchView('plans');
   tilt3D('.balance-hero');
@@ -1373,20 +1484,18 @@ function openWithdraw() {
 /* ══════════ REFER ══════════ */
 function showRefer() {
   const u = userDoc.data();
+  const rc = refCfg();
+  const triggerText = rc.trigger === 'first_plan' ? 'completes their first plan' : 'makes their first deposit';
   const s = openSheet(`
-    <div class="sheet-title">Refer & Earn 🎁</div>
-    <div class="sheet-sub">Share your code — you both get a ₹25 reward when a friend completes their first plan.</div>
+    <div class="sheet-title">${esc(rc.title)} 🎁</div>
+    <div class="sheet-sub">${esc(rc.description)}<br><br><b>You earn ₹${rc.referrerAmount}</b> and <b>they get ₹${rc.referredAmount}</b> when they ${triggerText}${rc.minDeposit > 0 ? ' (min ₹' + rc.minDeposit + ')' : ''}.</div>
     <div class="ref-box" style="margin-top:0"><b>${esc(u.referralCode || '—')}</b>
       <div>
         <button class="btn btn-soft btn-sm" id="cp-ref2" type="button">${IC.copy} Copy</button>
         <button class="btn btn-green btn-sm" id="sh-ref2" type="button">${IC.share} Share</button>
       </div></div>`);
   s.querySelector('#cp-ref2').onclick = () => { navigator.clipboard?.writeText(u.referralCode); toast('Referral code copied', 'ok'); };
-  s.querySelector('#sh-ref2').onclick = async () => {
-    const text = `Join me on GodX — save small amounts, earn real interest! Use my code ${u.referralCode} when you sign up 💜`;
-    if (navigator.share) { try { await navigator.share({ title: 'GodX', text }); } catch (e) {} }
-    else { navigator.clipboard?.writeText(text); toast('Invite message copied — paste anywhere!', 'ok'); }
-  };
+  s.querySelector('#sh-ref2').onclick = () => { closeSheet(); openSharePicker(); };
 }
 
 /* ══════════ SETTINGS ══════════ */
@@ -1409,7 +1518,7 @@ async function renderSettings() {
     <div class="ref-card">
       <div class="ref-head">
         <div class="ref-ic">${IC.gift}</div>
-        <div><b>Refer & Earn ₹25</b><p>You both get rewarded when a friend completes their first plan.</p></div>
+        <div><b>${esc(refCfg().title)} ₹${refCfg().referrerAmount}</b><p>${esc(refCfg().description)}</p></div>
       </div>
       <div class="ref-code">
         <div class="ref-code-val"><small>Your code</small><b>${esc(u.referralCode || '—')}</b></div>
@@ -1453,11 +1562,7 @@ async function renderSettings() {
     <p class="set-ver">GodX v8.0 · daily-interest micro-savings</p>`;
 
   $('#cp-ref').onclick = () => { navigator.clipboard?.writeText(u.referralCode); toast('Referral code copied', 'ok'); };
-  $('#sh-ref').onclick = async () => {
-    const text = `Join me on GodX — save small amounts, earn real interest! Use my code ${u.referralCode} when you sign up 💜`;
-    if (navigator.share) { try { await navigator.share({ title: 'GodX', text }); } catch (e) {} }
-    else { navigator.clipboard?.writeText(text); toast('Invite message copied — paste anywhere!', 'ok'); }
-  };
+  $('#sh-ref').onclick = () => openSharePicker();
   $('#sw-notif').onclick = e => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on', on); store.set('bgNotif', on ? 'on' : 'off'); toast(on ? 'Notifications on' : 'Notifications off'); };
   $('#sw-bal').onclick = e => { balanceVisible = !balanceVisible; store.set('bgBal', balanceVisible ? 'on' : 'off'); e.currentTarget.classList.toggle('on', balanceVisible); };
   $('#pf-edit').onclick = () => settingsSheet('edit');
@@ -1649,7 +1754,11 @@ function renderSupport() {
   draw();
 }
 
-/* live list of the user's own support chats — view-scoped listener (no leaks) */
+/* live list of the user's own support chats — view-scoped listener (no leaks)
+   v15: ONE chat per user. If ANY chat exists (open or closed) the "Start
+   Live Chat" button turns into either "Open Active Chat" (open) or a locked
+   "Waiting for admin to delete previous chat" (closed). A new chat is only
+   possible after admin deletes/wipes the old thread. */
 function renderChatList() {
   const q = db.collection('supportChats').where('uid', '==', currentUser.uid);
   viewUnsub.push(q.onSnapshot(snap => {
@@ -1659,17 +1768,29 @@ function renderChatList() {
       .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
     const hero = $('#chat-new');
     const open = chats.find(c => c.status === 'open');
+    const closed = !open && chats.length ? chats[0] : null;
     if (hero) {
-      hero.disabled = !!open;
-      hero.innerHTML = open ? `${IC.clock} <span>Chat Active — Tap to Open</span>` : `${IC.chat} <span>Start Live Chat</span>`;
-      hero.onclick = open ? () => openChatView(open.id) : startSupportChat;
+      hero.disabled = !!closed;
+      if (open) {
+        hero.innerHTML = `${IC.clock} <span>Chat Active — Tap to Open</span>`;
+        hero.onclick = () => openChatView(open.id);
+      } else if (closed) {
+        hero.innerHTML = `${IC.lock} <span>Previous Chat Ended — Waiting for Admin</span>`;
+        hero.onclick = () => {
+          toast('Your previous chat is closed. It must be deleted by admin before a new chat can be started.', 'err');
+          openChatView(closed.id);
+        };
+      } else {
+        hero.innerHTML = `${IC.chat} <span>Start Live Chat</span>`;
+        hero.onclick = startSupportChat;
+      }
     }
     if (!chats.length) { box.innerHTML = ''; return; }
-    box.innerHTML = `<div class="sec-head" style="margin-top:18px"><h3>Your Chats</h3></div>` + chats.slice(0, 5).map(c => `
+    box.innerHTML = `<div class="sec-head" style="margin-top:18px"><h3>Your Chat</h3></div>` + chats.slice(0, 5).map(c => `
       <button class="card chat-card" data-c="${c.id}" type="button">
         <div class="cc-ic ${c.status}">${IC.chat}${c.status === 'open' ? '<i class="cc-live-dot"></i>' : ''}</div>
         <div class="cc-mid">
-          <b>Support Chat ${c.status === 'open' ? '<span class="chip chip-green">Live</span>' : '<span class="chip chip-red">Ended</span>'}</b>
+          <b>Support Chat ${c.status === 'open' ? '<span class="chip chip-green">Live</span>' : '<span class="chip chip-red">Ended — Waiting for admin to delete</span>'}</b>
           <small>${c.lastKind === 'image' ? '📷 Photo' : c.lastKind === 'file' ? '📎 ' + esc(c.lastText || 'File') : esc(c.lastText || 'Chat started')} · ${fdate(c.lastAt || c.createdAt)}</small>
         </div>
         ${c.userUnread ? `<span class="cc-unread">${c.userUnread > 9 ? '9+' : c.userUnread}</span>` : ''}
@@ -1681,22 +1802,36 @@ function renderChatList() {
 
 async function startSupportChat() {
   showLoader('Opening chat…');
-  /* ── v14 FIX: the chat ALWAYS opens — there is deliberately NO admin-online
-     check. Whether the team is at the desk or not, the room opens instantly
-     and messages simply queue for the next reply. Previously the three
-     welcome messages and the summary update were AWAITED before the room
-     opened, so a single slow/failed write left users stuck on the loader
-     with the chat "never opening". ── */
+  /* ── v15 SPAM FIX: a user can hold ONLY ONE support chat at a time. If any
+     chat still exists for this user (open OR closed-but-not-deleted), we
+     REUSE it instead of creating a new one. A truly fresh chat is only
+     possible after the admin deletes the previous thread. ── */
   try {
     const u = userDoc.data();
     let chatId = null;
-    /* reuse an existing open chat if listing succeeds — but a list failure
-       (offline, rules, index) must NEVER block starting a chat */
+    /* Reuse ANY existing chat for this user (open or closed).
+       Prefer 'open' if multiple exist. */
     try {
       const existing = await db.collection('supportChats')
-        .where('uid', '==', currentUser.uid).where('status', '==', 'open').get();
-      if (!existing.empty) chatId = existing.docs[0].id;
+        .where('uid', '==', currentUser.uid).get();
+      if (!existing.empty) {
+        const open = existing.docs.find(d => d.data().status === 'open');
+        chatId = open ? open.id : existing.docs[0].id;
+      }
     } catch (e) { /* listing unavailable — proceed to create a fresh chat */ }
+    if (chatId) {
+      /* If the chat exists but is closed, tell the user they must wait for
+         admin to delete it before a new one can start. Otherwise open it. */
+      try {
+        const snap = await db.collection('supportChats').doc(chatId).get();
+        if (snap.exists && snap.data().status !== 'open') {
+          hideLoader();
+          toast('Your previous chat is closed. Wait for admin to delete it before starting a new chat.', 'err');
+          openChatView(chatId);
+          return;
+        }
+      } catch (e) {}
+    }
     if (!chatId) {
       const ref = await db.collection('supportChats').add({
         uid: currentUser.uid, userName: u.name || 'User', userEmail: u.email || '',
@@ -1769,8 +1904,7 @@ function openChatView(cid) {
     </div>
     <div class="chat-quick" id="ch-quick"></div>
     <div class="chat-closed-bar hidden" id="ch-closedbar">
-      <span>This chat was ended by support.</span>
-      <button class="btn btn-primary btn-sm" id="ch-new2" type="button">New Chat</button>
+      <span>This chat was ended by support. A new chat can only be started after admin deletes this one.</span>
     </div>
     <div class="chat-compose" id="ch-compose">
       <input type="file" id="ch-file" hidden>
@@ -1816,7 +1950,6 @@ function openChatView(cid) {
     if (ty) box.scrollTop = box.scrollHeight;
   };
   room.querySelector('#ch-back').onclick = kill;
-  room.querySelector('#ch-new2').onclick = () => { kill(); startSupportChat(); };
 
   /* live chat doc — detects admin ending / deleting the chat + admin typing */
   roomUnsub.push(db.collection('supportChats').doc(cid).onSnapshot(s => {
