@@ -1610,7 +1610,7 @@ function renderSupport() {
         <div class="sup-hero-ic">${IC.headset}</div>
         <div class="sup-hero-txt">
           <b>Help & Support</b>
-          <span><span class="online-dot"></span> Team online · replies in minutes</span>
+          <span>Always available — replies in minutes</span>
         </div>
       </div>
       <p class="sup-hero-sub">Instant answers below — or chat live with us. Send messages, photos &amp; files.</p>
@@ -1681,50 +1681,71 @@ function renderChatList() {
 
 async function startSupportChat() {
   showLoader('Opening chat…');
+  /* ── v14 FIX: the chat ALWAYS opens — there is deliberately NO admin-online
+     check. Whether the team is at the desk or not, the room opens instantly
+     and messages simply queue for the next reply. Previously the three
+     welcome messages and the summary update were AWAITED before the room
+     opened, so a single slow/failed write left users stuck on the loader
+     with the chat "never opening". ── */
   try {
     const u = userDoc.data();
-    const existing = await db.collection('supportChats')
-      .where('uid', '==', currentUser.uid).where('status', '==', 'open').get();
-    if (!existing.empty) { hideLoader(); return openChatView(existing.docs[0].id); }
-    const ref = await db.collection('supportChats').add({
-      uid: currentUser.uid, userName: u.name || 'User', userEmail: u.email || '',
-      status: 'open', userUnread: 0, adminUnread: 0,
-      lastText: '', lastKind: 'text',
-      lastAt: firebase.firestore.FieldValue.serverTimestamp(),
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    /* ── Pre-written auto-reply: welcome + referral + deposit details ──
-       Firestore rules only allow chat owners to create messages with
-       sender == 'user'. Asking the ADMIN to write these bot messages costs
-       one extra message-read per chat in the admin panel; asking the USER to
-       write sender:'admin' messages is blocked by the security rules.
-       Compromise: the user client posts them as sender:'user' flagged with
-       autoReply:true, and BOTH sides render those flagged bubbles as
-       "Support" messages — zero rule changes, zero extra admin reads. */
-    const msgs = db.collection('supportChats').doc(ref.id).collection('messages');
-    const bot = text => ({
-      sender: 'user', kind: 'text', autoReply: true, text,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    await msgs.add(bot(
-      `👋 Hi ${u.name || 'there'}! Welcome to GodX Support.\n\n` +
-      `You're chatting with our official support team. Tell us your issue — you can attach screenshots or files too. We typically reply within a few minutes.`));
-    await msgs.add(bot(
-      `🎁 Refer & Earn: share your referral code ${u.referralCode || ''} with friends — you BOTH get ₹25 in your wallet when they complete their first plan. Find it anytime in Home → Refer or Settings.`));
-    await msgs.add(bot(
-      `💡 Quick answers:\n` +
-      `• Add Money — Home / Wallet → Add Money (min ₹50), pay to the official UPI/bank shown, then submit your UTR + screenshot. Credited after verification, usually under 30 min.\n` +
-      `• Daily Interest — credited every 24 hours from the exact time you joined a plan, automatically.\n` +
-      `• Withdraw — min ₹100 to your saved bank account / UPI, paid within 24 hours.\n\n` +
-      `Type your question below and our team will take it from here 🙌`));
-    await db.collection('supportChats').doc(ref.id).update({
-      lastText: 'Welcome to GodX Support 👋', lastKind: 'text',
-      lastAt: firebase.firestore.FieldValue.serverTimestamp(),
-      userUnread: 3
-    });
+    let chatId = null;
+    /* reuse an existing open chat if listing succeeds — but a list failure
+       (offline, rules, index) must NEVER block starting a chat */
+    try {
+      const existing = await db.collection('supportChats')
+        .where('uid', '==', currentUser.uid).where('status', '==', 'open').get();
+      if (!existing.empty) chatId = existing.docs[0].id;
+    } catch (e) { /* listing unavailable — proceed to create a fresh chat */ }
+    if (!chatId) {
+      const ref = await db.collection('supportChats').add({
+        uid: currentUser.uid, userName: u.name || 'User', userEmail: u.email || '',
+        status: 'open', userUnread: 0, adminUnread: 0,
+        lastText: '', lastKind: 'text',
+        lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      chatId = ref.id;
+      /* ── Pre-written auto-replies — FIRE-AND-FORGET (never block opening).
+         Firestore rules only allow chat owners to create messages with
+         sender == 'user'. Asking the ADMIN to write these bot messages costs
+         one extra message-read per chat in the admin panel; asking the USER
+         to write sender:'admin' messages is blocked by the security rules.
+         Compromise: the user client posts them as sender:'user' flagged with
+         autoReply:true, and BOTH sides render those flagged bubbles as
+         "Support" messages — zero rule changes, zero extra admin reads. ── */
+      (async () => {
+        try {
+          const msgs = db.collection('supportChats').doc(chatId).collection('messages');
+          const bot = text => ({
+            sender: 'user', kind: 'text', autoReply: true, text,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          await msgs.add(bot(
+            `👋 Hi ${u.name || 'there'}! Welcome to GodX Support.\n\n` +
+            `You're chatting with our official support team. Tell us your issue — you can attach screenshots or files too. We typically reply within a few minutes.`));
+          await msgs.add(bot(
+            `🎁 Refer & Earn: share your referral code ${u.referralCode || ''} with friends — you BOTH get ₹25 in your wallet when they complete their first plan. Find it anytime in Home → Refer or Settings.`));
+          await msgs.add(bot(
+            `💡 Quick answers:\n` +
+            `• Add Money — Home / Wallet → Add Money (min ₹50), pay to the official UPI/bank shown, then submit your UTR + screenshot. Credited after verification, usually under 30 min.\n` +
+            `• Daily Interest — credited every 24 hours from the exact time you joined a plan, automatically.\n` +
+            `• Withdraw — min ₹100 to your saved bank account / UPI, paid within 24 hours.\n\n` +
+            `Type your question below and our team will take it from here 🙌`));
+          await db.collection('supportChats').doc(chatId).update({
+            lastText: 'Welcome to GodX Support 👋', lastKind: 'text',
+            lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+            userUnread: 3
+          });
+        } catch (e) { /* cosmetic only — the room is already open and usable */ }
+      })();
+    }
     hideLoader();
-    openChatView(ref.id);
-  } catch (e) { hideLoader(); toast('Could not start chat — try again', 'err'); }
+    openChatView(chatId);
+  } catch (e) {
+    hideLoader();
+    toast('Could not start chat — check connection & try again', 'err');
+  }
 }
 
 /* ══════════ PREMIUM CHAT ROOM (user side) ══════════
@@ -1741,7 +1762,7 @@ function openChatView(cid) {
         <svg viewBox="0 0 48 48" width="18" height="18"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(255,255,255,.16)"/><path d="M24 9l11 10-11 20L13 19z" fill="#fff"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#5EEAD4" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg>
       </div>
       <div class="chat-head-info"><b>GodX Support <span class="sup-badge">${IC.badge} Official</span></b>
-        <small id="ch-status"><span class="online-dot"></span> Online · typically replies in minutes</small></div>
+        <small id="ch-status">Typically replies within a few minutes</small></div>
     </div>
     <div class="chat-msgs" id="ch-msgs">
       <div class="chat-loading"><div class="cl-dots"><i></i><i></i><i></i></div><span>Loading conversation…</span></div>
@@ -1761,6 +1782,7 @@ function openChatView(cid) {
     </div>`;
   document.body.appendChild(room);
   let roomDead = false, firstPaint = true, pendingEcho = 0;
+  const seenMsgIds = new Set(); // bubbles already on screen — never re-animate them (anti-blink)
   let adminTyping = false;   // live flag from supportChats/{cid}.adminTyping
   const kill = () => {
     if (roomDead) return;
@@ -1789,7 +1811,7 @@ function openChatView(cid) {
       if (st && st.dataset.open !== '0')
       st.innerHTML = adminTyping
         ? '<span class="online-dot"></span> <span class="typing-txt">Support is typing…</span>'
-        : '<span class="online-dot"></span> Online · typically replies in minutes';
+        : 'Typically replies within a few minutes';
     const ty = box.querySelector('#ch-typing');
     if (ty) box.scrollTop = box.scrollHeight;
   };
@@ -1821,8 +1843,18 @@ function openChatView(cid) {
     if (!box) return;
     const seen = new Set();
     const msgs = snap.docs.filter(d => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
-      .map(d => d.data())
-      .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0) || (a.createdAt?.nanoseconds || 0) - (b.createdAt?.nanoseconds || 0));
+      .map(d => ({ id: d.id, ...d.data() }))
+      /* ── v14 BLINK FIX ①: pending messages (serverTimestamp not yet
+         resolved) sort as Infinity, i.e. they stay at the BOTTOM in send
+         order. Before, they sorted as time 0 — the freshly-sent bubble was
+         flung to the TOP of the chat and then jumped back down when the
+         server timestamp arrived, which users saw as a "blink/jump". ── */
+      .sort((a, b) => {
+        const as = (a.createdAt && a.createdAt.seconds != null) ? a.createdAt.seconds : Infinity;
+        const bs = (b.createdAt && b.createdAt.seconds != null) ? b.createdAt.seconds : Infinity;
+        if (as !== bs) return as - bs;
+        return ((a.createdAt && a.createdAt.nanoseconds) || 0) - ((b.createdAt && b.createdAt.nanoseconds) || 0);
+      });
     if (!msgs.length) {
       box.innerHTML = `<div class="chat-empty">
         <div class="ce-logo"><svg viewBox="0 0 48 48" width="34" height="34"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(37,99,235,.1)"/><path d="M24 9l11 10-11 20L13 19z" fill="#2563EB"/></svg></div>
@@ -1841,9 +1873,15 @@ function openChatView(cid) {
         body += `<a class="chat-file" href="${m.fileData}" download="${esc(m.fileName || 'file')}">${IC.file}<span>${esc(m.fileName || 'Attachment')}</span></a>`;
       if (m.text) body += esc(m.text);
       const pending = !m.createdAt;
-      return `<div class="chat-msg ${mine ? 'mine' : 'theirs'} ${pending ? 'pending' : ''}" style="animation-delay:${firstPaint ? Math.min(ix * 30, 240) : 0}ms">${body}
+      /* ── v14 BLINK FIX ②: every live snapshot re-renders the list; messages
+         already on screen (and the just-sent pending one, whose optimistic
+         echo already animated) skip the entrance animation — no more
+         whole-conversation replay on every send. ── */
+      const seenCls = (seenMsgIds.has(m.id) || pending) ? ' seen' : '';
+      return `<div class="chat-msg ${mine ? 'mine' : 'theirs'} ${pending ? 'pending' : ''}${seenCls}" style="animation-delay:${firstPaint ? Math.min(ix * 30, 240) : 0}ms">${body}
         <span class="chat-time">${mine ? 'You' : (m.autoReply ? 'Support · Auto' : 'Support')} · ${pending ? 'sending…' : ftime(m.createdAt)}${mine && !pending ? ' ✓' : ''}</span></div>`;
     }).join('');
+    msgs.forEach(m => seenMsgIds.add(m.id));
     firstPaint = false;
     syncTypingBubble(); // typing bubble rides the tail of the messages render
     if (atBottom || pendingEcho > 0 || adminTyping) { box.scrollTop = box.scrollHeight; pendingEcho = 0; }
