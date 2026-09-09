@@ -1255,3 +1255,31 @@ body{overflow-x:clip}
 
 /* ── Status line typing treatment ── */
 #ch-status .typing-txt{color:#5EEAD4;font-weight:800}
+
+/* ═══════════ v14.0 — Support-chat stability fixes ═══════════ */
+
+/* ── FIX A — Quick Answers "More" sheet: giant icons / crushed text ──
+   svg.arrow has no intrinsic size; as a flex child inside .qr-item it
+   ballooned to fill the entire card and squeezed the label text into
+   one-word vertical columns (the reported screenshot). The v11 clamp only
+   covered .chat-card — now clamped inside modal sheets too, on every axis. */
+.qr-item>svg.arrow,.qr-item .arrow,.modal-sheet svg.arrow{
+  width:16px!important;height:16px!important;min-width:16px!important;
+  max-width:16px!important;max-height:16px!important;flex:0 0 16px!important;
+  color:#CBD5E1;align-self:center}
+.qr-ic{width:36px!important;height:36px!important;min-width:36px!important;
+  max-width:36px!important;flex:0 0 36px!important;border-radius:12px!important;
+  display:flex!important;align-items:center!important;justify-content:center!important}
+.qr-ic svg{width:17px!important;height:17px!important;max-width:17px!important;
+  max-height:17px!important;flex:none!important;display:block!important}
+.qr-item>span{flex:1;min-width:0}
+
+/* ── FIX B — message "blink" on send ──
+   Every live snapshot re-rendered the whole list and replayed the msgIn
+   entrance animation on ALL bubbles. Messages already on screen now skip
+   the animation entirely (paired with the pending-sort fix in app.js). */
+.chat-msg.seen{animation:none!important}
+
+/* ── FIX C — chat opens regardless of admin presence ──
+   (logic lives in app.js: no online check; welcome auto-replies are
+   fire-and-forget so a slow write can never hold the room closed) */
