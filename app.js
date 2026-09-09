@@ -155,7 +155,7 @@ function toast(msg, type = '') {
 
 /* ══════════ CONFETTI celebration ══════════ */
 function confetti(n = 26) {
-  const colors = ['#6366F1', '#F2D06B', '#0E9F6E', '#2F6BEF', '#E5484D', '#D4AF37'];
+  const colors = ['#3B82F6', '#5EEAD4', '#16A34A', '#2563EB', '#DC2626', '#14B8A6'];
   for (let i = 0; i < n; i++) {
     const p = document.createElement('div');
     p.className = 'confetti-piece';
@@ -181,19 +181,36 @@ function countUp(el, to) {
   })(t0);
 }
 
-/* ══════════ 3D TILT + GLARE (premium hero cards) ══════════ */
+/* ══════════ 3D TILT + GLARE (premium hero cards) ══════════
+   Lag-free edition: passive listeners, rAF-throttled to one style write per
+   frame, and will-change is granted ONLY while the pointer is on the card —
+   a permanent will-change on every hero wastes compositor memory and makes
+   scrolling stutter on low-end Android. */
 function tilt3D(sel) {
   const el = document.querySelector(sel);
   if (!el) return;
   if (!el.querySelector('.hero-glare')) el.insertAdjacentHTML('beforeend', '<div class="hero-glare"></div>');
+  let rafId = 0, px = 0, py = 0;
+  el.addEventListener('pointerenter', () => { el.style.willChange = 'transform'; }, { passive: true });
   el.addEventListener('pointermove', e => {
-    const r = el.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
-    el.style.transform = `rotateX(${(-y * 7).toFixed(2)}deg) rotateY(${(x * 9).toFixed(2)}deg) translateZ(6px)`;
-    el.style.setProperty('--mx', ((x + .5) * 100) + '%');
-    el.style.setProperty('--my', ((y + .5) * 100) + '%');
-  });
-  el.addEventListener('pointerleave', () => { el.style.transform = ''; });
+    px = e.clientX; py = e.clientY;
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      const r = el.getBoundingClientRect();
+      const x = (px - r.left) / r.width - .5, y = (py - r.top) / r.height - .5;
+      el.style.transform = `rotateX(${(-y * 7).toFixed(2)}deg) rotateY(${(x * 9).toFixed(2)}deg) translateZ(6px)`;
+      el.style.setProperty('--mx', ((x + .5) * 100) + '%');
+      el.style.setProperty('--my', ((y + .5) * 100) + '%');
+    });
+  }, { passive: true });
+  const settle = () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    el.style.transform = '';
+    el.style.willChange = ''; // release the GPU layer — will-change cleanup
+  };
+  el.addEventListener('pointerleave', settle, { passive: true });
+  el.addEventListener('pointercancel', settle, { passive: true });
 }
 
 /* ══════════ MODAL (bottom sheet) ══════════ */
@@ -209,8 +226,27 @@ function openSheet(html) {
 }
 function closeSheet() { $('#modal-root').innerHTML = ''; }
 
-/* ══════════ SPLASH / AUTH ══════════ */
-window.addEventListener('load', () => setTimeout(() => $('#splash').classList.add('fade'), 1300));
+/* ══════════ SPLASH / AUTH ══════════
+   Deferred splash: hides as soon as the DOM is ready (never waits on the
+   full 'load' event — a slow Firebase CDN can no longer hold it hostage),
+   hard-capped at 900ms, then REMOVED from the DOM so it costs zero
+   compositing for the rest of the session. */
+(function splash(){
+  const el = document.getElementById('splash');
+  if (!el) return;
+  const t0 = performance.now();
+  const hide = () => {
+    if (el.dataset.done) return;
+    el.dataset.done = '1';
+    setTimeout(() => {
+      el.classList.add('fade');
+      setTimeout(() => el.remove(), 560); // drop the layer after the fade
+    }, Math.max(0, 900 - (performance.now() - t0)));
+  };
+  if (document.readyState !== 'loading') hide();
+  else document.addEventListener('DOMContentLoaded', hide, { once: true });
+  setTimeout(hide, 1600); // absolute failsafe
+})();
 
 $('#tab-login').onclick = () => switchAuthTab(true);
 $('#tab-signup').onclick = () => switchAuthTab(false);
@@ -396,7 +432,7 @@ function renderHeader() {
 }
 
 /* ══════════ NAV ══════════ */
-$$('.nav-btn').forEach(b => b.onclick = () => switchView(b.dataset.view));
+$$('.nav-btn').forEach(b => b.onclick = () => { b.classList.remove('bounce'); void b.offsetWidth; b.classList.add('bounce'); switchView(b.dataset.view); });
 
 /* tear down everything a view opened (chat listeners, timers) before switching */
 function teardownViewListeners() {
@@ -823,7 +859,7 @@ function drawPlansList() {
   livePlans.forEach(p => list.appendChild(planCard(p)));
 }
 
-const PLAN_COLORS = [['#0E9F6E', '#34D399'], ['#2F6BEF', '#60A5FA'], ['#3730A3', '#818CF8'], ['#B8912A', '#F2D06B']];
+const PLAN_COLORS = [['#16A34A', '#4ADE80'], ['#2563EB', '#60A5FA'], ['#1D4ED8', '#60A5FA'], ['#0D9488', '#5EEAD4']];
 const PLAN_ICONS = [IC.spark, IC.star, IC.zap, IC.gift];
 function planCard(p) {
   const idx = (p.minAmount || 0) % 97 % PLAN_COLORS.length;
@@ -930,13 +966,13 @@ async function renderWallet() {
     <div id="bank-slot"></div>
 
     <div class="stat-grid">
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#0E9F6E,#34D399)">${IC.downLeft}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#16A34A,#4ADE80)">${IC.downLeft}</div>
         <div><small>Total Deposits</small><b>${inr(u.totalDeposits || 0)}</b></div></div>
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#E5484D,#F87171)">${IC.upRight}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#DC2626,#F87171)">${IC.upRight}</div>
         <div><small>Total Withdrawn</small><b>${inr(u.totalWithdrawn || 0)}</b></div></div>
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.target}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.target}</div>
         <div><small>Total Saved</small><b>${inr(u.totalSaved || 0)}</b></div></div>
-      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#B8912A,#F2D06B)">${IC.gift}</div>
+      <div class="stat-cell"><div class="stat-ic" style="background:linear-gradient(135deg,#0D9488,#5EEAD4)">${IC.gift}</div>
         <div><small>Interest Earned</small><b>${inr2(u.totalCashback || 0)}</b></div></div>
     </div>
     <div class="sec-head"><h3>Transaction History</h3></div>
@@ -1095,6 +1131,12 @@ async function depositStepMethod(amt) {
     return;
   }
   let sel = methods[0];
+  /* per-field copyable detail row — copy button sits on the RIGHT of each value */
+  const cpRow = (label, val) => `
+    <div class="cp-row">
+      <div class="cp-mid"><small>${esc(label)}</small><b>${esc(val || '—')}</b></div>
+      <button class="cp-btn" type="button" data-cpv="${esc(val || '')}" data-cpl="${esc(label)}" aria-label="Copy ${esc(label)}">${IC.copy}</button>
+    </div>`;
   const draw = () => {
     box.innerHTML = methods.map(m => `
       <div class="paym ${m.id === sel.id ? 'sel' : ''}" data-id="${m.id}">
@@ -1103,21 +1145,30 @@ async function depositStepMethod(amt) {
           <b>${esc(m.label || (m.type === 'upi' ? 'UPI Payment' : 'Bank Transfer'))}</b>
         </div>
         ${m.type === 'upi'
-          ? `<div class="upi-id-pill">${esc(m.upiId)}</div>`
-          : `<div class="bank-grid">
-              <div><small>Account Name</small><b>${esc(m.accountName || '—')}</b></div>
-              <div><small>Account No.</small><b>${esc(m.accountNumber || '—')}</b></div>
-              <div><small>IFSC</small><b>${esc(m.ifsc || '—')}</b></div>
-              <div><small>Bank</small><b>${esc(m.bankName || '—')}</b></div>
+          ? `<div class="upi-id-pill upi-id-pill-row"><span>${esc(m.upiId)}</span>
+               <button class="cp-btn cp-btn-pill" type="button" data-cpv="${esc(m.upiId)}" data-cpl="UPI ID" aria-label="Copy UPI ID">${IC.copy}</button>
+             </div>`
+          : `<div class="cp-list">
+              ${cpRow('Account Name', m.accountName)}
+              ${cpRow('Account Number', m.accountNumber)}
+              ${cpRow('IFSC Code', m.ifsc)}
+              ${cpRow('Bank Name', m.bankName)}
             </div>`}
         ${m.note ? `<p class="muted" style="margin-top:8px">${esc(m.note)}</p>` : ''}
-        <button class="btn btn-soft btn-sm" type="button" data-copy="${m.id}">${IC.copy} Copy Details</button>
+        <button class="btn btn-soft btn-sm" type="button" data-copy="${m.id}">${IC.copy} Copy All Details</button>
       </div>`).join('') +
       `<div style="height:6px"></div>
        <button class="btn btn-primary btn-block" id="dep-paid" type="button">${IC.check} I've Paid — Submit Proof</button>`;
     box.querySelectorAll('.paym').forEach(pm => pm.onclick = e => {
-      if (e.target.closest('[data-copy]')) return;
+      if (e.target.closest('[data-copy]') || e.target.closest('[data-cpv]')) return;
       sel = methods.find(x => x.id === pm.dataset.id); draw();
+    });
+    /* individual field copy buttons (name, account no, IFSC, bank, UPI id) */
+    box.querySelectorAll('[data-cpv]').forEach(b => b.onclick = () => {
+      navigator.clipboard?.writeText(b.dataset.cpv);
+      b.classList.add('cp-done');
+      setTimeout(() => b.classList.remove('cp-done'), 1200);
+      toast(b.dataset.cpl + ' copied', 'ok');
     });
     box.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
       const m = methods.find(x => x.id === b.dataset.copy);
@@ -1370,27 +1421,27 @@ async function renderSettings() {
     </div>
 
     <div class="set-group"><h4>Account</h4>
-      <button class="set-item" data-s="edit" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.user}</div>
+      <button class="set-item" data-s="edit" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.user}</div>
         <div class="set-mid"><b>Edit Profile</b><small>Name &amp; phone number</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="bank" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#3730A3,#818CF8)">${IC.bank}</div>
+      <button class="set-item" data-s="bank" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#4F46E5,#818CF8)">${IC.bank}</div>
         <div class="set-mid"><b>Bank Details</b><small>${u.bankDetails && u.bankDetails.accountNumber ? esc(u.bankDetails.bankName) + ' •••• ' + esc(String(u.bankDetails.accountNumber).slice(-4)) : 'Add account for withdrawals'}</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="kyc" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#0E9F6E,#34D399)">${IC.lock}</div>
+      <button class="set-item" data-s="kyc" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#16A34A,#4ADE80)">${IC.lock}</div>
         <div class="set-mid"><b>Security</b><small>Change password, sessions</small></div>${IC.arrowR}</button>
-      <button class="set-item" data-s="tx" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#B8912A,#F2D06B)">${IC.doc}</div>
+      <button class="set-item" data-s="tx" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#0D9488,#5EEAD4)">${IC.doc}</div>
         <div class="set-mid"><b>Statements</b><small>Full transaction history</small></div>${IC.arrowR}</button>
     </div>
 
     <div class="set-group"><h4>Preferences</h4>
-      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#3730A3,#818CF8)">${IC.bell}</div>
+      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#4F46E5,#818CF8)">${IC.bell}</div>
         <div class="set-mid"><b>Notifications</b><small>Interest &amp; plan alerts</small></div>
         <div class="switch ${store.get('bgNotif', 'on') !== 'off' ? 'on' : ''}" id="sw-notif" role="switch"></div></div>
-      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#0891B2,#22D3EE)">${IC.eye}</div>
+      <div class="set-item"><div class="set-ic" style="background:linear-gradient(135deg,#0D9488,#2DD4BF)">${IC.eye}</div>
         <div class="set-mid"><b>Show Balances</b><small>Hide amounts on screen</small></div>
         <div class="switch ${balanceVisible ? 'on' : ''}" id="sw-bal" role="switch"></div></div>
     </div>
 
     <div class="set-group"><h4>Support & Legal</h4>
-      <button class="set-item" data-s="faq" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2F6BEF,#60A5FA)">${IC.chat}</div>
+      <button class="set-item" data-s="faq" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#2563EB,#60A5FA)">${IC.chat}</div>
         <div class="set-mid"><b>Help & FAQ</b><small>Answers in one tap</small></div>${IC.arrowR}</button>
       <button class="set-item" data-s="terms" type="button"><div class="set-ic" style="background:linear-gradient(135deg,#64748B,#94A3B8)">${IC.doc}</div>
         <div class="set-mid"><b>Terms &amp; Privacy</b><small>Plain-language, no fine print tricks</small></div>${IC.arrowR}</button>
@@ -1479,7 +1530,7 @@ function settingsSheet(key) {
     </div>`);
   if (key === 'about') openSheet(`
     <div class="sheet-title">About GodX</div><div class="sheet-sub">Save smart. Earn interest daily.</div>
-    <div class="success-pop" style="background:var(--grad-soft)"><svg viewBox="0 0 48 48" style="width:42px;height:42px"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(79,70,229,.12)"/><path d="M24 9l11 10-11 20L13 19z" fill="#4F46E5"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg></div>
+    <div class="success-pop" style="background:var(--grad-soft)"><svg viewBox="0 0 48 48" style="width:42px;height:42px"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(37,99,235,.12)"/><path d="M24 9l11 10-11 20L13 19z" fill="#2563EB"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#fff" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg></div>
     <p class="muted" style="line-height:1.7;text-align:center">GodX helps you build a savings habit with small, flexible plans
     and real daily interest rewards. Built with transparency at its core — every fee, reward and transaction is visible
     in the app.<br><br><b style="color:var(--ink)">Made with 💜 in India · v8.0</b></p>`);
@@ -1523,6 +1574,30 @@ const SUPPORT_FAQS = [
   { c: 'Account & Security', q: 'Is my money and data safe?', a: 'Yes. All data is encrypted, deposits are processed via regulated payment partners, and every rupee has a visible receipt in your transaction history. We never sell personal data.' },
   { c: 'Account & Security', q: 'How do I change my password?', a: 'Go to Settings → Security → "Email Me a Reset Link". We send a secure password-reset link to your registered email. You can also use "Forgot password?" on the login screen.' },
   { c: 'Referrals', q: 'How does the referral reward work?', a: 'Share your code from Settings or the Refer button on Home. When a friend signs up with your code and completes their first plan, you BOTH receive a ₹25 reward in your wallets automatically.' }
+];
+
+/* ══════════ QUICK ANSWERS — tap-to-reply buttons in live chat ══════════
+   Tapping a chip sends the question as the user's message; a typing
+   indicator plays and the pre-written solution arrives as a Support
+   bubble (autoReply path — same rule-compatible trick as the welcome
+   bot messages). The admin sees the question and knows it was answered. */
+const CHAT_QUICK_REPLIES = [
+  { icon: 'zap', label: 'Add Money', q: 'How do I add money to my wallet?',
+    a: '💳 Adding money is easy:\n1. Tap Add Money on Home or Wallet (min ₹50)\n2. Pay to the official UPI ID / bank account shown\n3. Submit your UTR / reference number + payment screenshot\n\nYour wallet is credited after verification — usually under 30 minutes. Track it live in Wallet → Transaction History.' },
+  { icon: 'timer', label: 'Daily Interest', q: 'When is my daily interest credited?',
+    a: '⏰ Interest lands every 24 hours from the EXACT time you joined a plan — never at midnight. Joined at 2:00 PM? It credits at 2:00 PM daily, automatically. Every active plan shows a live "Next Interest" countdown. Missed days catch up in one credit when you open the app.' },
+  { icon: 'upRight', label: 'Withdraw', q: 'How do I withdraw my money?',
+    a: '🏦 Withdrawals:\n1. Add your bank account or UPI ID in Wallet → My Bank Account\n2. Tap Withdraw, enter an amount (min ₹100), pick your destination\n3. Requests are reviewed for security and paid within 24 hours\n\nWallet balance can be withdrawn anytime; money in active plans becomes available when the plan completes.' },
+  { icon: 'checkCircle', label: 'Deposit Pending', q: 'Why is my deposit still pending?',
+    a: '🔎 Deposits stay pending while our team verifies your UTR and payment screenshot — usually under 30 minutes. If it\'s been longer, check that the UTR you entered exactly matches your UPI app\'s payment details, and that the screenshot clearly shows the amount and reference number. Still stuck? Send us your UTR here and we\'ll check it right away.' },
+  { icon: 'alert', label: 'Withdrawal Rejected', q: 'Why was my withdrawal rejected?',
+    a: '⚠️ Most rejections are a bank-detail mismatch — a wrong IFSC or account number. The full amount is instantly refunded to your wallet. Fix your details in Wallet → My Bank Account, then request again. If it happens twice, chat with us here and we\'ll sort it out.' },
+  { icon: 'target', label: 'How Plans Work', q: 'How do savings plans work?',
+    a: '📦 Pick a plan, choose an amount, and it moves from your wallet into the plan for the stated duration. The total interest is split into daily slices credited every 24 hours from the moment you joined. At maturity your principal is released back to your wallet. Full terms are shown on every plan card before you join.' },
+  { icon: 'gift', label: 'Referral Reward', q: 'How does the referral reward work?',
+    a: '🎁 Share your referral code (Home → Refer or Settings). When a friend signs up with your code and completes their first plan, you BOTH get ₹25 in your wallets — automatically. There\'s no limit: every friend who joins with your code earns you another reward.' },
+  { icon: 'clock', label: 'UTR Number', q: 'What is a UTR number and where do I find it?',
+    a: '🔢 UTR is the unique 12-digit reference for your payment. In GPay / PhonePe / Paytm, open the transaction you made and tap its details — the UTR / UPI Ref No is listed there. Copy it exactly into the deposit form so we can verify your payment instantly.' }
 ];
 
 function renderSupport() {
@@ -1618,6 +1693,35 @@ async function startSupportChat() {
       lastAt: firebase.firestore.FieldValue.serverTimestamp(),
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
+    /* ── Pre-written auto-reply: welcome + referral + deposit details ──
+       Firestore rules only allow chat owners to create messages with
+       sender == 'user'. Asking the ADMIN to write these bot messages costs
+       one extra message-read per chat in the admin panel; asking the USER to
+       write sender:'admin' messages is blocked by the security rules.
+       Compromise: the user client posts them as sender:'user' flagged with
+       autoReply:true, and BOTH sides render those flagged bubbles as
+       "Support" messages — zero rule changes, zero extra admin reads. */
+    const msgs = db.collection('supportChats').doc(ref.id).collection('messages');
+    const bot = text => ({
+      sender: 'user', kind: 'text', autoReply: true, text,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    await msgs.add(bot(
+      `👋 Hi ${u.name || 'there'}! Welcome to GodX Support.\n\n` +
+      `You're chatting with our official support team. Tell us your issue — you can attach screenshots or files too. We typically reply within a few minutes.`));
+    await msgs.add(bot(
+      `🎁 Refer & Earn: share your referral code ${u.referralCode || ''} with friends — you BOTH get ₹25 in your wallet when they complete their first plan. Find it anytime in Home → Refer or Settings.`));
+    await msgs.add(bot(
+      `💡 Quick answers:\n` +
+      `• Add Money — Home / Wallet → Add Money (min ₹50), pay to the official UPI/bank shown, then submit your UTR + screenshot. Credited after verification, usually under 30 min.\n` +
+      `• Daily Interest — credited every 24 hours from the exact time you joined a plan, automatically.\n` +
+      `• Withdraw — min ₹100 to your saved bank account / UPI, paid within 24 hours.\n\n` +
+      `Type your question below and our team will take it from here 🙌`));
+    await db.collection('supportChats').doc(ref.id).update({
+      lastText: 'Welcome to GodX Support 👋', lastKind: 'text',
+      lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+      userUnread: 3
+    });
     hideLoader();
     openChatView(ref.id);
   } catch (e) { hideLoader(); toast('Could not start chat — try again', 'err'); }
@@ -1634,7 +1738,7 @@ function openChatView(cid) {
     <div class="chat-head">
       <button class="chat-back" id="ch-back" type="button" aria-label="Back">${IC.chevL}</button>
       <div class="chat-head-logo">
-        <svg viewBox="0 0 48 48" width="22" height="22"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(255,255,255,.16)"/><path d="M24 9l11 10-11 20L13 19z" fill="#fff"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#F2D06B" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg>
+        <svg viewBox="0 0 48 48" width="18" height="18"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(255,255,255,.16)"/><path d="M24 9l11 10-11 20L13 19z" fill="#fff"/><path d="M13 19h22M24 9l-5 10 5 20M24 9l5 10-5 20" fill="none" stroke="#5EEAD4" stroke-width="1.7" stroke-linejoin="round" opacity=".9"/></svg>
       </div>
       <div class="chat-head-info"><b>GodX Support <span class="sup-badge">${IC.badge} Official</span></b>
         <small id="ch-status"><span class="online-dot"></span> Online · typically replies in minutes</small></div>
@@ -1642,6 +1746,7 @@ function openChatView(cid) {
     <div class="chat-msgs" id="ch-msgs">
       <div class="chat-loading"><div class="cl-dots"><i></i><i></i><i></i></div><span>Loading conversation…</span></div>
     </div>
+    <div class="chat-quick" id="ch-quick"></div>
     <div class="chat-closed-bar hidden" id="ch-closedbar">
       <span>This chat was ended by support.</span>
       <button class="btn btn-primary btn-sm" id="ch-new2" type="button">New Chat</button>
@@ -1656,18 +1761,42 @@ function openChatView(cid) {
     </div>`;
   document.body.appendChild(room);
   let roomDead = false, firstPaint = true, pendingEcho = 0;
+  let adminTyping = false;   // live flag from supportChats/{cid}.adminTyping
   const kill = () => {
     if (roomDead) return;
     roomDead = true;
     roomUnsub.forEach(u => { try { u(); } catch (e) {} });
+    /* stop broadcasting that the user is typing when the room closes */
+    try { db.collection('supportChats').doc(cid).update({ userTyping: false }); } catch (e) {}
     room.classList.add('chat-room-out');
     setTimeout(() => room.remove(), 220);
   };
   const roomUnsub = [];
+
+  /* ── Typing indicator bubble — appended/removed at the tail of the
+     messages list so the live messages render never fights it ── */
+  const typingHTML = `<div class="chat-msg theirs typing" id="ch-typing" aria-label="Support is typing"><i></i><i></i><i></i></div>`;
+  const syncTypingBubble = () => {
+    if (roomDead) return;
+    const box = room.querySelector('#ch-msgs');
+    if (!box || box.querySelector('.chat-loading')) return;
+    const existing = box.querySelector('#ch-typing');
+    if (adminTyping && !existing) {
+      box.insertAdjacentHTML('beforeend', typingHTML);
+      box.scrollTop = box.scrollHeight;
+    } else if (!adminTyping && existing) existing.remove();
+    const st = room.querySelector('#ch-status');
+      if (st && st.dataset.open !== '0')
+      st.innerHTML = adminTyping
+        ? '<span class="online-dot"></span> <span class="typing-txt">Support is typing…</span>'
+        : '<span class="online-dot"></span> Online · typically replies in minutes';
+    const ty = box.querySelector('#ch-typing');
+    if (ty) box.scrollTop = box.scrollHeight;
+  };
   room.querySelector('#ch-back').onclick = kill;
   room.querySelector('#ch-new2').onclick = () => { kill(); startSupportChat(); };
 
-  /* live chat doc — detects admin ending or deleting the chat */
+  /* live chat doc — detects admin ending / deleting the chat + admin typing */
   roomUnsub.push(db.collection('supportChats').doc(cid).onSnapshot(s => {
     if (roomDead) return;
     if (!s.exists) { kill(); toast('This chat was deleted by support'); if (currentView === 'support') renderSupport(); return; }
@@ -1675,8 +1804,13 @@ function openChatView(cid) {
     const closed = c.status !== 'open';
     room.querySelector('#ch-compose').classList.toggle('hidden', closed);
     room.querySelector('#ch-closedbar').classList.toggle('hidden', !closed);
+    const quick = room.querySelector('#ch-quick');
+    if (quick) quick.classList.toggle('hidden', closed);
     const st = room.querySelector('#ch-status');
-    if (st) st.innerHTML = closed ? 'Chat ended' : '<span class="online-dot"></span> Online · typically replies in minutes';
+    if (st) st.dataset.open = closed ? '0' : '1';
+    adminTyping = !closed && !!c.adminTyping;
+    syncTypingBubble();
+    if (st && closed) st.innerHTML = 'Chat ended';
     if ((c.userUnread || 0) > 0) db.collection('supportChats').doc(cid).update({ userUnread: 0 }).catch(() => {});
   }, () => {}));
 
@@ -1691,13 +1825,15 @@ function openChatView(cid) {
       .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0) || (a.createdAt?.nanoseconds || 0) - (b.createdAt?.nanoseconds || 0));
     if (!msgs.length) {
       box.innerHTML = `<div class="chat-empty">
-        <div class="ce-logo"><svg viewBox="0 0 48 48" width="34" height="34"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(79,70,229,.1)"/><path d="M24 9l11 10-11 20L13 19z" fill="#4F46E5"/></svg></div>
+        <div class="ce-logo"><svg viewBox="0 0 48 48" width="34" height="34"><rect x="4" y="4" width="40" height="40" rx="12" fill="rgba(37,99,235,.1)"/><path d="M24 9l11 10-11 20L13 19z" fill="#2563EB"/></svg></div>
         <b>Say hello 👋</b><p>Describe your issue — you can attach screenshots or files too. We typically reply within minutes.</p></div>`;
       return;
     }
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
     box.innerHTML = msgs.map((m, ix) => {
-      const mine = m.sender === 'user';
+      /* autoReply messages are user-written (rules require sender:'user') but
+         are pre-written SUPPORT messages — render them on the support side */
+      const mine = m.sender === 'user' && !m.autoReply;
       let body = '';
       if (m.kind === 'image' && m.fileData)
         body += `<img class="chat-img" src="${m.fileData}" alt="Shared image">`;
@@ -1706,10 +1842,11 @@ function openChatView(cid) {
       if (m.text) body += esc(m.text);
       const pending = !m.createdAt;
       return `<div class="chat-msg ${mine ? 'mine' : 'theirs'} ${pending ? 'pending' : ''}" style="animation-delay:${firstPaint ? Math.min(ix * 30, 240) : 0}ms">${body}
-        <span class="chat-time">${mine ? 'You' : 'Support'} · ${pending ? 'sending…' : ftime(m.createdAt)}${mine && !pending ? ' ✓' : ''}</span></div>`;
+        <span class="chat-time">${mine ? 'You' : (m.autoReply ? 'Support · Auto' : 'Support')} · ${pending ? 'sending…' : ftime(m.createdAt)}${mine && !pending ? ' ✓' : ''}</span></div>`;
     }).join('');
     firstPaint = false;
-    if (atBottom || pendingEcho > 0) { box.scrollTop = box.scrollHeight; pendingEcho = 0; }
+    syncTypingBubble(); // typing bubble rides the tail of the messages render
+    if (atBottom || pendingEcho > 0 || adminTyping) { box.scrollTop = box.scrollHeight; pendingEcho = 0; }
   }, () => {
     if (roomDead) return;
     const box = room.querySelector('#ch-msgs');
@@ -1719,8 +1856,33 @@ function openChatView(cid) {
     if (r) r.onclick = () => { kill(); openChatView(cid); };
   }));
 
+  /* ── SEND — hardened against the reported "user messages" bugs:
+     ① optimistic bubble shows INSTANTLY (before: nothing appeared until the
+        server round-trip, so on slow networks users thought the send failed,
+        tapped again, and sent duplicates);
+     ② the send button locks for the round-trip (double-tap proof);
+     ③ on failure the text is RESTORED to the input (before: it was wiped);
+     ④ userTyping is cleared on the same batch write so the admin panel
+        never gets stuck showing "typing…". ── */
+  let _sendInFlight = false;
   const sendMsg = async payload => {
+    if (_sendInFlight) return false;
+    _sendInFlight = true;
     pendingEcho++;
+    const sendBtn = room.querySelector('#ch-send');
+    if (sendBtn) sendBtn.disabled = true;
+    /* optimistic echo — visible immediately, replaced by the live snapshot */
+    const box = room.querySelector('#ch-msgs');
+    if (box && !box.querySelector('.chat-loading')) {
+      const echo = document.createElement('div');
+      echo.className = 'chat-msg mine pending';
+      echo.innerHTML = (payload.kind === 'image' && payload.fileData ? `<img class="chat-img" src="${payload.fileData}" alt="Shared image">` : '')
+        + (payload.text ? esc(payload.text) : (payload.fileName ? '📎 ' + esc(payload.fileName) : ''))
+        + '<span class="chat-time">You · sending…</span>';
+      const ty = box.querySelector('#ch-typing');
+      box.insertBefore(echo, ty || null);
+      box.scrollTop = box.scrollHeight;
+    }
     try {
       const batch = db.batch();
       batch.set(db.collection('supportChats').doc(cid).collection('messages').doc(), {
@@ -1729,20 +1891,91 @@ function openChatView(cid) {
         lastText: payload.text || payload.fileName || (payload.kind === 'image' ? '📷 Photo' : '📎 File'),
         lastKind: payload.kind || 'text',
         lastAt: firebase.firestore.FieldValue.serverTimestamp(),
+        userTyping: false,
         adminUnread: firebase.firestore.FieldValue.increment(1) });
       await batch.commit();
-    } catch (e) { pendingEcho = 0; toast('Message failed — check connection', 'err'); }
+      return true;
+    } catch (e) {
+      pendingEcho = 0;
+      const echoList = box ? box.querySelectorAll('.chat-msg.mine.pending') : [];
+      if (echoList.length) echoList[echoList.length - 1].remove();
+      toast('Message failed — check connection', 'err');
+      return false;
+    } finally {
+      _sendInFlight = false;
+      if (sendBtn) sendBtn.disabled = false;
+    }
   };
-  const doSend = () => {
+  const doSend = async () => {
+    if (_sendInFlight) return; // double-tap / Enter-spam guard
     const inp = room.querySelector('#ch-text');
     const t = inp.value.trim();
     if (!t) return;
-    inp.value = '';
+    if (sendBtn()) sendBtn().disabled = true;
+    const ok = await sendMsg({ kind: 'text', text: t });
+    if (ok) { inp.value = ''; pingTyping(false, true); }
+    else { inp.value = t; } // restore the draft on failure — never lose the user's text
     inp.focus();
-    sendMsg({ kind: 'text', text: t });
+    function sendBtn() { return room.querySelector('#ch-send'); }
   };
   room.querySelector('#ch-send').onclick = doSend;
-  room.querySelector('#ch-text').addEventListener('keydown', e => { if (e.key === 'Enter') doSend(); });
+  room.querySelector('#ch-text').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSend(); } });
+
+  /* ── broadcast userTyping to the admin (debounced, auto-clears) ── */
+  let _typingState = false, _typingClear = null;
+  const pingTyping = (on, force) => {
+    if (!force && on === _typingState) return;
+    _typingState = on;
+    db.collection('supportChats').doc(cid).update({ userTyping: on }).catch(() => {});
+    if (_typingClear) { clearTimeout(_typingClear); _typingClear = null; }
+    if (on) _typingClear = setTimeout(() => pingTyping(false, true), 3500);
+  };
+  room.querySelector('#ch-text').addEventListener('input', e => pingTyping(!!e.target.value.trim()));
+  room.querySelector('#ch-text').addEventListener('blur', () => pingTyping(false, true));
+
+  /* ── QUICK ANSWERS — tappable buttons; tap = question bubble + typing
+     animation + the pre-written solution arrives as a Support bubble ── */
+  const quickBox = room.querySelector('#ch-quick');
+  const quickBtn = (r, ix) => `<button class="cq-chip" type="button" data-qr="${ix}">${IC[r.icon] || IC.spark}<span>${esc(r.label)}</span></button>`;
+  quickBox.innerHTML = '<span class="chat-quick-label">Quick answers</span>'
+    + CHAT_QUICK_REPLIES.slice(0, 4).map(quickBtn).join('')
+    + `<button class="cq-chip cq-more" type="button" id="cq-more">${IC.chevD}<span>More</span></button>`;
+  let _qrBusy = false;
+  const fireQuickReply = async r => {
+    if (_qrBusy || _sendInFlight) return;
+    _qrBusy = true;
+    const ok = await sendMsg({ kind: 'text', text: r.q });
+    if (ok) {
+      /* fake the support-side typing indicator locally, then post the
+         pre-written solution through the rule-safe autoReply path */
+      adminTyping = true; syncTypingBubble();
+      setTimeout(async () => {
+        adminTyping = false; syncTypingBubble();
+        if (roomDead) return;
+        try {
+          await db.collection('supportChats').doc(cid).collection('messages').add({
+            sender: 'user', kind: 'text', autoReply: true, text: r.a,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+          /* note: userUnread is intentionally NOT incremented — this is a
+             self-service answer, not a real support message */
+          db.collection('supportChats').doc(cid).update({
+            lastText: r.a.slice(0, 80), lastKind: 'text',
+            lastAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+        } catch (e) {}
+        _qrBusy = false;
+      }, 1500 + Math.random() * 900);
+    } else _qrBusy = false;
+  };
+  quickBox.querySelectorAll('[data-qr]').forEach(b => b.onclick = () => fireQuickReply(CHAT_QUICK_REPLIES[Number(b.dataset.qr)]));
+  quickBox.querySelector('#cq-more').onclick = () => {
+    const s = openSheet(`<div class="sheet-title">Quick Answers</div>
+      <div class="sheet-sub">Tap any question — the solution posts instantly in the chat.</div>
+      ${CHAT_QUICK_REPLIES.map((r, i) => `<button class="qr-item" type="button" data-qrs="${i}">
+        <span class="qr-ic">${IC[r.icon] || IC.spark}</span>
+        <span style="flex:1;min-width:0"><b>${esc(r.label)}</b><small>${esc(r.q)}</small></span>${IC.arrowR}</button>`).join('')}`);
+    s.querySelectorAll('[data-qrs]').forEach(b => b.onclick = () => { closeSheet(); fireQuickReply(CHAT_QUICK_REPLIES[Number(b.dataset.qrs)]); });
+  };
+
   room.querySelector('#ch-attach').onclick = () => room.querySelector('#ch-file').click();
   room.querySelector('#ch-file').onchange = async e => {
     const f = e.target.files && e.target.files[0];
